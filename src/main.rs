@@ -2,7 +2,6 @@ use std;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
-use std::process;
 
 enum Statement<'mainbuf> {
     Integer(i64),
@@ -28,26 +27,54 @@ fn main() {
         return;
     }
 
-    if let Statement::Dictionary(map) = &statements[0] {
-        if map.is_empty() {
-            println!("main dict is empty");
+    let metainfo = match &statements[0] {
+        Statement::Dictionary(map) => map,
+        _ => {
+            println!("metainfo dict is not dict");
             return;
         }
+    };
 
-        if let Statement::ByteString(announce_link) = &map.get("announce".as_bytes()).unwrap() {
-            println!(
-                "got announce url {}",
-                str::from_utf8(announce_link).unwrap()
-            );
-        }
-
-        if let Statement::ByteString(announce_link) = &map.get("announce".as_bytes()).unwrap() {
-            println!(
-                "got announce url {}",
-                str::from_utf8(announce_link).unwrap()
-            );
-        }
+    if metainfo.is_empty() {
+        println!("main dict is empty");
+        return;
     }
+
+    let announce_url = match &metainfo.get("announce".as_bytes()).unwrap() {
+        Statement::ByteString(link) => str::from_utf8(link).unwrap(),
+        _ => {
+            println!("announce url is not string");
+            return;
+        }
+    };
+
+    let base_url = get_base_url(announce_url);
+
+    println!("got announce url {} and base url {}", announce_url, base_url);
+
+    let info = match &metainfo.get("info".as_bytes()).unwrap() {
+        Statement::Dictionary(map) => map,
+        _ => {
+            println!("info dict is not dict");
+            return;
+        }
+    };
+
+    if let Statement::ByteString(name) = &info.get("name".as_bytes()).unwrap() {
+        println!("got file name {}", str::from_utf8(name).unwrap());
+    }
+}
+
+fn get_base_url(u: &str) -> &str {
+    let mut prot = u.find("://").unwrap_or_default();
+    prot += if prot > 0 { 3 } else { 0 };
+    let mut end = u[prot..]
+        .find(':')
+        .or(u[prot..].find('/'))
+        .or(u[prot..].find('?'))
+        .unwrap_or(u.len());
+    end += if end != u.len() { prot } else { 0 };
+    return &u[prot..end];
 }
 
 fn parse_bencoding<'mainbuf>(buf: &'mainbuf Vec<u8>) -> Result<Vec<Statement<'mainbuf>>, String> {

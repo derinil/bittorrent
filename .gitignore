@@ -1,3 +1,4 @@
 /target
 *.torrent
 *.txt
+.DS_Store

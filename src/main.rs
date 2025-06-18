@@ -1,17 +1,13 @@
+use percent_encoding::{self, NON_ALPHANUMERIC};
 use sha1_smol;
 use std;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time;
 
-enum Statement<'mainbuf> {
-    Integer(i64),
-    ByteString(&'mainbuf [u8]),
-    List(Vec<Statement<'mainbuf>>),
-    Dictionary(HashMap<&'mainbuf [u8], Statement<'mainbuf>>),
-}
+mod bencoding;
+mod udp;
 
 const PORT: u64 = 6884;
 
@@ -24,7 +20,7 @@ fn main() {
     file_content = file_content.trim_ascii_end().to_vec();
     println!("read torrent file {}", file_content.len());
 
-    let statements = parse_bencoding(&file_content).unwrap();
+    let statements = bencoding::parse(&file_content).unwrap();
     println!("parsed torrent file with {} statements", statements.len());
 
     if statements.len() == 0 {
@@ -32,13 +28,8 @@ fn main() {
         return;
     }
 
-    let mut out_file = File::create("out.torrent").unwrap();
-    out_file
-        .write_all(&marshal_bencoding(&statements[0]))
-        .unwrap();
-
     let metainfo = match &statements[0] {
-        Statement::Dictionary(map) => map,
+        bencoding::Statement::Dictionary(map) => map,
         _ => {
             println!("metainfo dict is not dict");
             return;
@@ -50,55 +41,93 @@ fn main() {
         return;
     }
 
-    let announce_url = match &metainfo.get("announce".as_bytes()).unwrap() {
-        Statement::ByteString(link) => str::from_utf8(link).unwrap(),
-        _ => {
-            println!("announce url is not string");
-            return;
-        }
+    let mut announce_urls = Vec::new();
+
+    match &metainfo.get("announce-list".as_bytes()) {
+        Some(v) => match v {
+            bencoding::Statement::List(list) => {
+                for s in list {
+                    match s {
+                        bencoding::Statement::List(sublist) => {
+                            for ss in sublist {
+                                match ss {
+                                    bencoding::Statement::ByteString(str) => {
+                                        announce_urls.push(str::from_utf8(str).unwrap());
+                                    }
+                                    _ => {
+                                        println!("announce list url is not string");
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            println!("announce list element is not list");
+                            return;
+                        }
+                    }
+                }
+            }
+            _ => {
+                println!("announce list is not list");
+                return;
+            }
+        },
+        _ => {}
     };
 
-    let base_url = get_base_url(announce_url);
+    if !metainfo.contains_key("announce-list".as_bytes()) {
+        let announce_url = match &metainfo.get("announce".as_bytes()).unwrap() {
+            bencoding::Statement::ByteString(link) => str::from_utf8(link).unwrap(),
+            _ => {
+                println!("announce url is not string");
+                return;
+            }
+        };
+        announce_urls.push(announce_url);
+    }
 
-    println!(
-        "got announce url {} and base url {}",
-        announce_url, base_url
-    );
+    println!("got announce url {:?}", announce_urls);
 
     let peer_id = create_peer_id();
     println!("created peer id {}", peer_id);
 
     let info = match &metainfo.get("info".as_bytes()).unwrap() {
-        Statement::Dictionary(map) => map,
+        bencoding::Statement::Dictionary(map) => map,
         _ => {
             println!("info dict is not dict");
             return;
         }
     };
 
-    if let Statement::ByteString(name) = &info.get("name".as_bytes()).unwrap() {
+    if let bencoding::Statement::ByteString(name) = &info.get("name".as_bytes()).unwrap() {
         println!("got file name {}", str::from_utf8(name).unwrap());
     }
 
-    let info_hash =
-        sha1_smol::Sha1::from(marshal_bencoding(metainfo.get("info".as_bytes()).unwrap()))
+    let info_hash = percent_encoding::percent_encode(
+        &sha1_smol::Sha1::from(bencoding::marshal(metainfo.get("info".as_bytes()).unwrap()))
             .digest()
-            .to_string();
+            .bytes(),
+        NON_ALPHANUMERIC,
+    )
+    .to_string();
 
     let mut total_bytes: u64 = 0;
     match &info.get("length".as_bytes()) {
         Some(l) => {
-            if let Statement::Integer(len) = l {
+            if let bencoding::Statement::Integer(len) = l {
                 total_bytes = *len as u64;
             }
         }
         _ => {}
     }
     if total_bytes == 0 {
-        if let Statement::List(fs) = &info.get("files".as_bytes()).unwrap() {
+        if let bencoding::Statement::List(fs) = &info.get("files".as_bytes()).unwrap() {
             fs.iter().for_each(|s| {
-                if let Statement::Dictionary(dict) = s {
-                    if let Statement::Integer(len) = &dict.get("length".as_bytes()).unwrap() {
+                if let bencoding::Statement::Dictionary(dict) = s {
+                    if let bencoding::Statement::Integer(len) =
+                        &dict.get("length".as_bytes()).unwrap()
+                    {
                         total_bytes += *len as u64;
                     }
                 }
@@ -108,7 +137,29 @@ fn main() {
 
     println!("got total bytes {} and hash {}", total_bytes, info_hash);
 
-    get_request(base_url, &peer_id, &info_hash, total_bytes).unwrap();
+    for announcer in announce_urls {
+        if announcer.starts_with("udp://") {
+            let u = announcer.split("udp://").nth(1).unwrap();
+            // "tracker.opentrackr.org:1337"
+            handle_udp_tracker(u);
+        } else {
+            println!("skipping non udp announcer {}", announcer);
+            // get_request(base_url, &peer_id, &info_hash, total_bytes).unwrap();
+        }
+    }
+}
+
+fn handle_udp_tracker(u: &str) {
+    println!("attempting udp connection to {}", u);
+    let mut t = udp::Tracker::new().unwrap();
+    match t.initiate(u) {
+        Ok(_) => {}
+        Err(e) => {
+            println!("failed to connect {}", e);
+            return;
+        }
+    };
+    println!("connected");
 }
 
 fn create_peer_id() -> String {
@@ -171,143 +222,4 @@ fn get_base_url(u: &str) -> &str {
         .unwrap_or(u.len());
     end += if end != u.len() { prot } else { 0 };
     return &u[prot..end];
-}
-
-fn parse_bencoding<'mainbuf>(buf: &'mainbuf Vec<u8>) -> Result<Vec<Statement<'mainbuf>>, String> {
-    let mut idx: usize = 0;
-    let mut statements: Vec<Statement> = Vec::new();
-    statements.reserve(5);
-
-    while idx < buf.len() {
-        let res = handle_statement(&buf[idx..]).unwrap();
-        statements.push(res.0);
-        idx += res.1 + 1;
-    }
-
-    Ok(statements)
-}
-
-fn handle_statement<'mainbuf>(buf: &'mainbuf [u8]) -> Result<(Statement<'mainbuf>, usize), String> {
-    let mut idx = 0;
-
-    match buf[idx] {
-        b'i' => {
-            // Integer
-            idx += 1;
-            let begin = idx;
-            while idx < buf.len() && buf[idx] != b'e' {
-                idx += 1;
-            }
-            if idx >= buf.len() {
-                return Err(String::from("integer has no end"));
-            }
-            let end = idx;
-            return Ok((
-                Statement::Integer(
-                    str::from_utf8(&buf[begin..end])
-                        .unwrap()
-                        .parse::<i64>()
-                        .unwrap(),
-                ),
-                idx,
-            ));
-        }
-        b'l' => {
-            // List
-            idx += 1;
-            let mut l: Vec<Statement<'mainbuf>> = Vec::new();
-            while idx < buf.len() && buf[idx] != b'e' {
-                let res = handle_statement(&buf[idx..]).unwrap();
-                l.push(res.0);
-                idx += res.1 + 1;
-            }
-            return Ok((Statement::List(l), idx));
-        }
-        b'd' => {
-            // Dictionary
-            idx += 1;
-            let mut m: HashMap<&'mainbuf [u8], Statement<'mainbuf>> = HashMap::new();
-            while idx < buf.len() && buf[idx] != b'e' {
-                let key = handle_statement(&buf[idx..]).unwrap();
-                idx += key.1 + 1;
-                if let Statement::ByteString(key_str) = key.0 {
-                    let value = handle_statement(&buf[idx..]).unwrap();
-                    idx += value.1 + 1;
-                    m.insert(key_str, value.0);
-                } else {
-                    return Err(String::from("Dictionary key must be string"));
-                }
-            }
-            return Ok((Statement::Dictionary(m), idx));
-        }
-        _ => {
-            // Byte string
-            if idx >= buf.len() {
-                return Err(String::from("index is over buf length"));
-            }
-            let begin = idx;
-            while idx < buf.len() && buf[idx] >= b'0' && buf[idx] <= b'9' {
-                idx += 1;
-            }
-            if idx >= buf.len() {
-                return Err(String::from("string length has no end"));
-            }
-            let end = idx;
-            if buf[idx] != b':' {
-                return Err(String::from("string length has no colon"));
-            }
-            idx += 1;
-            let strlen = str::from_utf8(&buf[begin..end])
-                .unwrap()
-                .parse::<usize>()
-                .unwrap();
-            let s = Statement::ByteString(&buf[idx..idx + strlen]);
-            idx += strlen - 1;
-            return Ok((s, idx));
-        }
-    }
-}
-
-fn marshal_bencoding(st: &Statement) -> Vec<u8> {
-    let mut buf = Vec::new();
-    buf.reserve(500);
-
-    marshal_statement(&mut buf, st);
-
-    buf
-}
-
-fn marshal_statement(buf: &mut Vec<u8>, st: &Statement) {
-    match st {
-        Statement::Integer(num) => {
-            buf.push(b'i');
-            buf.extend(num.to_string().as_bytes());
-            buf.push(b'e');
-        }
-        Statement::ByteString(str) => {
-            buf.extend(str.len().to_string().as_bytes());
-            buf.push(b':');
-            buf.extend(*str);
-        }
-        Statement::List(list) => {
-            buf.push(b'l');
-            list.iter().for_each(|s| {
-                marshal_statement(buf, s);
-            });
-            buf.push(b'e');
-        }
-        Statement::Dictionary(dict) => {
-            buf.push(b'd');
-            let mut keys: Vec<&&[u8]> = dict.keys().collect();
-            keys.sort();
-            keys.iter().for_each(|k| {
-                let s = dict.get(*k).unwrap();
-                buf.extend(k.len().to_string().as_bytes());
-                buf.push(b':');
-                buf.extend(**k);
-                marshal_statement(buf, s);
-            });
-            buf.push(b'e');
-        }
-    }
 }

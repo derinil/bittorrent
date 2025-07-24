@@ -1,6 +1,7 @@
 use percent_encoding::{self, NON_ALPHANUMERIC};
 use sha1_smol;
 use std;
+use std::f32::INFINITY;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -90,7 +91,10 @@ fn main() {
     println!("got announce url {:?}", announce_urls);
 
     let peer_id = create_peer_id();
-    println!("created peer id {}", peer_id);
+    println!(
+        "created peer id {}",
+        String::from_utf8(peer_id.to_vec()).unwrap()
+    );
 
     let info = match &metainfo.get("info".as_bytes()).unwrap() {
         bencoding::Statement::Dictionary(map) => map,
@@ -104,13 +108,13 @@ fn main() {
         println!("got file name {}", str::from_utf8(name).unwrap());
     }
 
-    let info_hash = percent_encoding::percent_encode(
-        &sha1_smol::Sha1::from(bencoding::marshal(metainfo.get("info".as_bytes()).unwrap()))
+    let info_hash_bs =
+        sha1_smol::Sha1::from(bencoding::marshal(metainfo.get("info".as_bytes()).unwrap()))
             .digest()
-            .bytes(),
-        NON_ALPHANUMERIC,
-    )
-    .to_string();
+            .bytes();
+
+    let info_hash: String =
+        percent_encoding::percent_encode(&info_hash_bs, NON_ALPHANUMERIC).to_string();
 
     let mut total_bytes: u64 = 0;
     match &info.get("length".as_bytes()) {
@@ -137,11 +141,17 @@ fn main() {
 
     println!("got total bytes {} and hash {}", total_bytes, info_hash);
 
-    for announcer in announce_urls {
+    'announceLoop: for announcer in announce_urls.split_at(2).1 {
         if announcer.starts_with("udp://") {
             let u = announcer.split("udp://").nth(1).unwrap();
             // "tracker.opentrackr.org:1337"
-            handle_udp_tracker(u);
+            match handle_udp_tracker(u) {
+                Some(mut tr) => {
+                    handle_download(&mut tr, info_hash_bs, peer_id).unwrap();
+                    break 'announceLoop;
+                }
+                None => {}
+            }
         } else {
             println!("skipping non udp announcer {}", announcer);
             // get_request(base_url, &peer_id, &info_hash, total_bytes).unwrap();
@@ -149,20 +159,31 @@ fn main() {
     }
 }
 
-fn handle_udp_tracker(u: &str) {
+fn handle_udp_tracker(u: &str) -> Option<udp::Tracker> {
     println!("attempting udp connection to {}", u);
     let mut t = udp::Tracker::new().unwrap();
     match t.initiate(u) {
         Ok(_) => {}
         Err(e) => {
             println!("failed to connect {}", e);
-            return;
+            return None;
         }
     };
     println!("connected");
+    return Some(t);
 }
 
-fn create_peer_id() -> String {
+fn handle_download(
+    tr: &mut udp::Tracker,
+    info_hash: [u8; 20],
+    peer_id: [u8; 20],
+) -> Result<(), std::io::Error> {
+    println!("downloading");
+    tr.announce(info_hash, peer_id, 1)?;
+    Ok(())
+}
+
+fn create_peer_id() -> [u8; 20] {
     let mut bs: [u8; 20] = [0; 20];
     let dip = "dips";
     let mut off = 0;
@@ -182,7 +203,7 @@ fn create_peer_id() -> String {
     bs = bs.map(|n| -> u8 {
         if n == 0 { b'D' } else { n }
     });
-    String::from_utf8(bs.to_vec()).unwrap()
+    bs
 }
 
 fn get_request(

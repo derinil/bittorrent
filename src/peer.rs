@@ -1,4 +1,5 @@
 use std::io;
+use std::io::Read;
 use std::io::Write;
 use std::net;
 use std::net::SocketAddr;
@@ -30,8 +31,12 @@ impl Peer {
     fn connect(self) {}
 
     pub fn handshake(self: &Self, info_hash: [u8; 20], peer_id: [u8; 20]) -> Result<(), io::Error> {
-        let mut conn =
-            TcpStream::connect_timeout(&self.to_socket_addr(), time::Duration::from_secs(10))?;
+        println!("handshaking");
+
+        let sa = self.to_socket_addr();
+        println!("{}", sa);
+
+        let mut conn = TcpStream::connect_timeout(&sa, time::Duration::from_secs(5))?;
 
         conn.set_read_timeout(Some(time::Duration::from_secs(10)))?;
         conn.set_write_timeout(Some(time::Duration::from_secs(10)))?;
@@ -40,7 +45,10 @@ impl Peer {
 
         conn.write(&packet)?;
 
-        conn.
+        let mut buf = [0; 512];
+        let nread = conn.read(&mut buf)?;
+
+        println!("read {nread} bytes");
 
         Ok(())
     }
@@ -49,11 +57,21 @@ impl Peer {
         SocketAddr::new(
             net::IpAddr::V4(net::Ipv4Addr::new(
                 (self.ip_address >> 24) as u8,
-                (self.ip_address >> 24) as u8,
-                (self.ip_address >> 24) as u8,
-                (self.ip_address >> 24) as u8,
+                (self.ip_address >> 16) as u8,
+                (self.ip_address >> 8) as u8,
+                (self.ip_address) as u8,
             )),
             self.port,
+        )
+    }
+
+    pub fn to_ip_string(self: &Self) -> String {
+        format!(
+            "{}.{}.{}.{}",
+            (self.ip_address >> 24) as u8,
+            (self.ip_address >> 16) as u8,
+            (self.ip_address >> 8) as u8,
+            (self.ip_address) as u8,
         )
     }
 
@@ -62,10 +80,10 @@ impl Peer {
         let mut buf = [0; 68];
 
         buf[0] = 19;
-        buf[1..19].copy_from_slice("BitTorrent protocol".as_bytes());
+        buf[1..20].copy_from_slice("BitTorrent protocol".as_bytes());
         // reserved: eight (8) reserved bytes. All current implementations use all zeroes
-        buf[27..47].copy_from_slice(&info_hash);
-        buf[47..67].copy_from_slice(&peer_id);
+        buf[28..48].copy_from_slice(&info_hash);
+        buf[48..68].copy_from_slice(&peer_id);
 
         buf
     }

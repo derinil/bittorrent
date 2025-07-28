@@ -193,11 +193,17 @@ fn handle_download(
         println!("finishing download, no seeders found");
         return Ok(());
     }
-    match seeders.get(0) {
-        Some(seeder) => {
-            seeder.handshake(info_hash, peer_id)?;
-        },
-        None => {}
+
+    for seeder in seeders {
+        if seeder.to_ip_string() != "212.32.48.136" {
+            continue;
+        }
+        match seeder.handshake(info_hash, peer_id) {
+            Ok(_) => {}
+            Err(err) => {
+                println!("failed to handshake {err}")
+            }
+        };
     }
     Ok(())
 }

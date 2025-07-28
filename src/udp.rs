@@ -122,7 +122,7 @@ impl Tracker {
 
         for i in 0..seeders.len() {
             match seeders.get(i) {
-                Some(seeder) => println!("{}:{}", print_ip(seeder.ip_address), seeder.port),
+                Some(seeder) => println!("{}:{}", peer::ip_to_str(seeder.ip_address), seeder.port),
                 None => {}
             }
         }

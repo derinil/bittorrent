@@ -1,7 +1,6 @@
 use std::io;
 use std::io::Read;
 use std::io::Write;
-use std::net;
 use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::time;
@@ -11,6 +10,8 @@ const BITTORRENT_PROTOCOL: &str = "BitTorrent protocol";
 pub struct Peer {
     pub ip_address: u32,
     pub port: u16,
+    conn: Option<TcpStream>,
+    addr: Option<SocketAddr>,
     am_choked: bool,
     am_interested: bool,
     peer_choked: bool,
@@ -18,10 +19,12 @@ pub struct Peer {
 }
 
 impl Peer {
-    pub fn new(ip_addr: u32, port: u16) -> Self {
+    pub fn new(ip_address: u32, port: u16) -> Self {
         Self {
-            ip_address: ip_addr,
+            ip_address: ip_address,
             port: port,
+            conn: None,
+            addr: None,
             // https://wiki.theory.org/BitTorrentSpecification#Overview
             am_choked: true,
             am_interested: false,
@@ -30,25 +33,36 @@ impl Peer {
         }
     }
 
-    fn connect(self) {}
+    fn accept(self: &Self) {}
+
+    fn configure_connection(self: &mut Self) -> Result<(), io::Error> {
+        if let None = self.conn {
+            return Ok(());
+        }
+
+        self.conn
+            .as_ref()
+            .unwrap()
+            .set_read_timeout(Some(time::Duration::from_secs(10)))?;
+        self.conn
+            .as_ref()
+            .unwrap()
+            .set_write_timeout(Some(time::Duration::from_secs(10)))?;
+
+        Ok(())
+    }
 
     pub fn handshake(self: &Self, info_hash: [u8; 20], peer_id: [u8; 20]) -> Result<(), io::Error> {
-        println!("handshaking");
-
-        let sa = self.to_socket_addr();
-        println!("{}", sa);
-
-        let mut conn = TcpStream::connect_timeout(&sa, time::Duration::from_secs(5))?;
-
-        conn.set_read_timeout(Some(time::Duration::from_secs(10)))?;
-        conn.set_write_timeout(Some(time::Duration::from_secs(10)))?;
+        if let None = self.conn {
+            return Ok(());
+        }
 
         let packet = HandshakePacket::new(info_hash, peer_id).build();
 
-        conn.write(&packet)?;
+        self.conn.as_ref().unwrap().write(&packet)?;
 
         let mut buf = [0; 512];
-        let nread = conn.read(&mut buf)?;
+        let nread = self.conn.as_ref().unwrap().read(&mut buf)?;
 
         println!("read {nread} bytes");
 
@@ -60,28 +74,6 @@ impl Peer {
         }
 
         Ok(())
-    }
-
-    fn to_socket_addr(self: &Self) -> SocketAddr {
-        SocketAddr::new(
-            net::IpAddr::V4(net::Ipv4Addr::new(
-                (self.ip_address >> 24) as u8,
-                (self.ip_address >> 16) as u8,
-                (self.ip_address >> 8) as u8,
-                (self.ip_address) as u8,
-            )),
-            self.port,
-        )
-    }
-
-    pub fn to_ip_string(self: &Self) -> String {
-        format!(
-            "{}.{}.{}.{}",
-            (self.ip_address >> 24) as u8,
-            (self.ip_address >> 16) as u8,
-            (self.ip_address >> 8) as u8,
-            (self.ip_address) as u8,
-        )
     }
 }
 
@@ -139,4 +131,26 @@ impl Packet for HandshakePacket {
             peer_id: buf.get(48..68).unwrap().try_into().unwrap(),
         }))
     }
+}
+
+// fn to_socket_addr(self: &Self) -> SocketAddr {
+//     SocketAddr::new(
+//         net::IpAddr::V4(net::Ipv4Addr::new(
+//             (ip >> 24) as u8,
+//             (ip >> 16) as u8,
+//             (ip >> 8) as u8,
+//             (ip) as u8,
+//         )),
+//         self.port,
+//     )
+// }
+
+pub fn ip_to_str(ip: u32) -> String {
+    format!(
+        "{}.{}.{}.{}",
+        (ip >> 24) as u8,
+        (ip >> 16) as u8,
+        (ip >> 8) as u8,
+        (ip) as u8,
+    )
 }

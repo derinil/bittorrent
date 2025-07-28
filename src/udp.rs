@@ -1,10 +1,6 @@
-use std::{
-    fmt,
-    io::{Error, Read},
-    net::UdpSocket,
-    thread::sleep,
-    time::Duration,
-};
+use std::{io::Error, net::UdpSocket, thread::sleep, time::Duration};
+
+use crate::peer;
 
 // https://www.bittorrent.org/beps/bep_0015.html
 
@@ -20,6 +16,16 @@ pub struct Tracker {
 struct Packet<const PACKET_SIZE: usize> {
     tx_id: u32,
     bytes: [u8; PACKET_SIZE],
+}
+
+fn print_ip(ip: u32) -> String {
+    format!(
+        "{}.{}.{}.{}",
+        (ip >> 24) as u8,
+        (ip >> 16) as u8,
+        (ip >> 8) as u8,
+        (ip) as u8
+    )
 }
 
 impl Tracker {
@@ -66,7 +72,7 @@ impl Tracker {
         info_hash: [u8; 20],
         peer_id: [u8; 20],
         event: u32,
-    ) -> Result<(), std::io::Error> {
+    ) -> Result<Vec<peer::Peer>, std::io::Error> {
         let packet = self.create_announce_packet(info_hash, peer_id, event);
         self.socket.send(&packet.bytes)?;
 
@@ -104,7 +110,24 @@ impl Tracker {
 
         println!("got {interval} seconds, {leechers} leechers, {seeders} seeders");
 
-        Ok(())
+        let mut seeders = Vec::new();
+        let mut begin_idx = 20;
+        while begin_idx + 6 < len_read {
+            seeders.push(peer::Peer::new(
+                u32::from_be_bytes(buf[begin_idx..begin_idx + 4].try_into().unwrap()),
+                u16::from_be_bytes(buf[begin_idx + 4..begin_idx + 6].try_into().unwrap()),
+            ));
+            begin_idx += 6;
+        }
+
+        for i in 0..seeders.len() {
+            match seeders.get(i) {
+                Some(seeder) => println!("{}:{}", print_ip(seeder.ip_address), seeder.port),
+                None => {}
+            }
+        }
+
+        Ok(seeders)
     }
 
     fn create_connect_packet(self: &mut Self) -> Packet<16> {

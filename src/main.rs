@@ -1,16 +1,16 @@
 use percent_encoding::{self, NON_ALPHANUMERIC};
 use sha1_smol;
 use std;
-use std::f32::INFINITY;
 use std::fs::File;
 use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::net::TcpStream;
+use std::thread;
 use std::time;
 
 mod bencoding;
+mod peer;
 mod udp;
-
-const PORT: u64 = 6884;
 
 fn main() {
     const FILE_NAME: &str = "./wired-cd.torrent";
@@ -141,6 +141,13 @@ fn main() {
 
     println!("got total bytes {} and hash {}", total_bytes, info_hash);
 
+    let listener = thread::spawn(|| match start_server() {
+        Ok(_) => {}
+        Err(err) => {
+            println!("server returned error: {}", err);
+        }
+    });
+
     'announceLoop: for announcer in announce_urls.split_at(2).1 {
         if announcer.starts_with("udp://") {
             let u = announcer.split("udp://").nth(1).unwrap();
@@ -157,6 +164,8 @@ fn main() {
             // get_request(base_url, &peer_id, &info_hash, total_bytes).unwrap();
         }
     }
+
+    _ = listener.join();
 }
 
 fn handle_udp_tracker(u: &str) -> Option<udp::Tracker> {
@@ -179,7 +188,23 @@ fn handle_download(
     peer_id: [u8; 20],
 ) -> Result<(), std::io::Error> {
     println!("downloading");
-    tr.announce(info_hash, peer_id, 1)?;
+    let seeders = tr.announce(info_hash, peer_id, 1)?;
+    if seeders.len() == 0 {
+        println!("finishing download, no seeders found");
+        return Ok(());
+    }
+    match seeders.get(0) {
+        Some(seeder) => {
+            seeder.handshake(info_hash, peer_id)?;
+        },
+        None => {}
+    }
+    Ok(())
+}
+
+fn start_server() -> Result<(), std::io::Error> {
+    let s = TcpListener::bind(":6881")?;
+    _ = s;
     Ok(())
 }
 
@@ -218,7 +243,7 @@ fn get_request(
 
     let payload = format!(
         "GET /?port={}&info_hash={}&peer_id={}&uploaded=0&downloaded=0&left={}&compact=1&event=started HTTP/1.1\r\nHost: {}\r\nUser-Agent: bittorrent001\r\nAccept: */*\r\nConnection: close\r\n\r\n",
-        PORT, info_hash, peer_id, total_bytes, u
+        6881, info_hash, peer_id, total_bytes, u
     );
 
     println!("sending payload {}", payload);

@@ -4,7 +4,8 @@ use sha1_smol;
 use std::io;
 
 pub struct Torrent {
-    info_hash: [u8; 20],
+    pub info_hash: [u8; 20],
+    pub announce_urls: Vec<String>,
 }
 
 impl Torrent {
@@ -38,7 +39,10 @@ impl Torrent {
                                 for ss in sublist {
                                     match ss {
                                         bencoding::Statement::ByteString(str) => {
-                                            announce_urls.push(str::from_utf8(str).unwrap());
+                                            announce_urls.push(
+                                                String::try_from(str::from_utf8(str).unwrap())
+                                                    .unwrap(),
+                                            );
                                         }
                                         _ => {
                                             return Err(easy_err(
@@ -62,7 +66,9 @@ impl Torrent {
 
         if !metainfo.contains_key("announce-list".as_bytes()) {
             let announce_url = match &metainfo.get("announce".as_bytes()).unwrap() {
-                bencoding::Statement::ByteString(link) => str::from_utf8(link).unwrap(),
+                bencoding::Statement::ByteString(link) => {
+                    String::try_from(str::from_utf8(link).unwrap()).unwrap()
+                }
                 _ => {
                     return Err(easy_err("announce url is not string"));
                 }
@@ -113,6 +119,7 @@ impl Torrent {
 
         let s = Self {
             info_hash: info_hash_bs,
+            announce_urls: announce_urls,
         };
 
         println!(

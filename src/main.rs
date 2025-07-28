@@ -37,31 +37,31 @@ fn main() {
 
     let torr = torrent::Torrent::parse(file_content).expect("failed to parse torrent");
 
-    // let listener = thread::spawn(|| match start_server() {
-    //     Ok(_) => {}
-    //     Err(err) => {
-    //         println!("server returned error: {}", err);
-    //     }
-    // });
+    let listener = thread::spawn(|| match start_server() {
+        Ok(_) => {}
+        Err(err) => {
+            println!("server returned error: {}", err);
+        }
+    });
 
-    // 'announceLoop: for announcer in announce_urls.split_at(2).1 {
-    //     if announcer.starts_with("udp://") {
-    //         let u = announcer.split("udp://").nth(1).unwrap();
-    //         // "tracker.opentrackr.org:1337"
-    //         match handle_udp_tracker(u) {
-    //             Some(mut tr) => {
-    //                 handle_download(&mut tr, info_hash_bs, peer_id).unwrap();
-    //                 break 'announceLoop;
-    //             }
-    //             None => {}
-    //         }
-    //     } else {
-    //         println!("skipping non udp announcer {}", announcer);
-    //         // get_request(base_url, &peer_id, &info_hash, total_bytes).unwrap();
-    //     }
-    // }
+    'announceLoop: for announcer in torr.announce_urls.split_at(2).1 {
+        if announcer.starts_with("udp://") {
+            let u = announcer.split("udp://").nth(1).unwrap();
+            // "tracker.opentrackr.org:1337"
+            match handle_udp_tracker(u) {
+                Some(mut tr) => {
+                    handle_download(&mut tr, torr.info_hash, peer_id).unwrap();
+                    break 'announceLoop;
+                }
+                None => {}
+            }
+        } else {
+            println!("skipping non udp announcer {}", announcer);
+            // get_request(base_url, &peer_id, &info_hash, total_bytes).unwrap();
+        }
+    }
 
-    // _ = listener.join();
+    _ = listener.join();
 }
 
 fn handle_udp_tracker(u: &str) -> Option<udp::Tracker> {

@@ -1,94 +1,33 @@
-use percent_encoding::{self, NON_ALPHANUMERIC};
-use sha1_smol;
-use std;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::net::TcpStream;
 use std::thread;
 use std::time;
+use std::{self, env, os, process};
 
 mod bencoding;
 mod peer;
+mod torrent;
 mod udp;
+mod util;
 
 fn main() {
-    const FILE_NAME: &str = "./wired-cd.torrent";
-    // const FILE_NAME: &str = "./new.torrent";
-    let mut file = File::open(FILE_NAME).unwrap();
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 {
+        println!("missing torrent filename");
+        process::exit(1);
+    }
+
+    let file_name = args.get(1).unwrap();
+
+    println!("downloading torrent {}", file_name);
+
+    let mut file = File::open(file_name).unwrap();
     let mut file_content: Vec<u8> = Vec::new();
     file.read_to_end(&mut file_content).unwrap();
     file_content = file_content.trim_ascii_end().to_vec();
     println!("read torrent file {}", file_content.len());
-
-    let statements = bencoding::parse(&file_content).unwrap();
-    println!("parsed torrent file with {} statements", statements.len());
-
-    if statements.len() == 0 {
-        println!("got 0 statements, exiting");
-        return;
-    }
-
-    let metainfo = match &statements[0] {
-        bencoding::Statement::Dictionary(map) => map,
-        _ => {
-            println!("metainfo dict is not dict");
-            return;
-        }
-    };
-
-    if metainfo.is_empty() {
-        println!("main dict is empty");
-        return;
-    }
-
-    let mut announce_urls = Vec::new();
-
-    match &metainfo.get("announce-list".as_bytes()) {
-        Some(v) => match v {
-            bencoding::Statement::List(list) => {
-                for s in list {
-                    match s {
-                        bencoding::Statement::List(sublist) => {
-                            for ss in sublist {
-                                match ss {
-                                    bencoding::Statement::ByteString(str) => {
-                                        announce_urls.push(str::from_utf8(str).unwrap());
-                                    }
-                                    _ => {
-                                        println!("announce list url is not string");
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                        _ => {
-                            println!("announce list element is not list");
-                            return;
-                        }
-                    }
-                }
-            }
-            _ => {
-                println!("announce list is not list");
-                return;
-            }
-        },
-        _ => {}
-    };
-
-    if !metainfo.contains_key("announce-list".as_bytes()) {
-        let announce_url = match &metainfo.get("announce".as_bytes()).unwrap() {
-            bencoding::Statement::ByteString(link) => str::from_utf8(link).unwrap(),
-            _ => {
-                println!("announce url is not string");
-                return;
-            }
-        };
-        announce_urls.push(announce_url);
-    }
-
-    println!("got announce url {:?}", announce_urls);
 
     let peer_id = create_peer_id();
     println!(
@@ -96,76 +35,33 @@ fn main() {
         String::from_utf8(peer_id.to_vec()).unwrap()
     );
 
-    let info = match &metainfo.get("info".as_bytes()).unwrap() {
-        bencoding::Statement::Dictionary(map) => map,
-        _ => {
-            println!("info dict is not dict");
-            return;
-        }
-    };
+    let torr = torrent::Torrent::parse(file_content).expect("failed to parse torrent");
 
-    if let bencoding::Statement::ByteString(name) = &info.get("name".as_bytes()).unwrap() {
-        println!("got file name {}", str::from_utf8(name).unwrap());
-    }
+    // let listener = thread::spawn(|| match start_server() {
+    //     Ok(_) => {}
+    //     Err(err) => {
+    //         println!("server returned error: {}", err);
+    //     }
+    // });
 
-    let info_hash_bs =
-        sha1_smol::Sha1::from(bencoding::marshal(metainfo.get("info".as_bytes()).unwrap()))
-            .digest()
-            .bytes();
+    // 'announceLoop: for announcer in announce_urls.split_at(2).1 {
+    //     if announcer.starts_with("udp://") {
+    //         let u = announcer.split("udp://").nth(1).unwrap();
+    //         // "tracker.opentrackr.org:1337"
+    //         match handle_udp_tracker(u) {
+    //             Some(mut tr) => {
+    //                 handle_download(&mut tr, info_hash_bs, peer_id).unwrap();
+    //                 break 'announceLoop;
+    //             }
+    //             None => {}
+    //         }
+    //     } else {
+    //         println!("skipping non udp announcer {}", announcer);
+    //         // get_request(base_url, &peer_id, &info_hash, total_bytes).unwrap();
+    //     }
+    // }
 
-    let info_hash: String =
-        percent_encoding::percent_encode(&info_hash_bs, NON_ALPHANUMERIC).to_string();
-
-    let mut total_bytes: u64 = 0;
-    match &info.get("length".as_bytes()) {
-        Some(l) => {
-            if let bencoding::Statement::Integer(len) = l {
-                total_bytes = *len as u64;
-            }
-        }
-        _ => {}
-    }
-    if total_bytes == 0 {
-        if let bencoding::Statement::List(fs) = &info.get("files".as_bytes()).unwrap() {
-            fs.iter().for_each(|s| {
-                if let bencoding::Statement::Dictionary(dict) = s {
-                    if let bencoding::Statement::Integer(len) =
-                        &dict.get("length".as_bytes()).unwrap()
-                    {
-                        total_bytes += *len as u64;
-                    }
-                }
-            });
-        }
-    }
-
-    println!("got total bytes {} and hash {}", total_bytes, info_hash);
-
-    let listener = thread::spawn(|| match start_server() {
-        Ok(_) => {}
-        Err(err) => {
-            println!("server returned error: {}", err);
-        }
-    });
-
-    'announceLoop: for announcer in announce_urls.split_at(2).1 {
-        if announcer.starts_with("udp://") {
-            let u = announcer.split("udp://").nth(1).unwrap();
-            // "tracker.opentrackr.org:1337"
-            match handle_udp_tracker(u) {
-                Some(mut tr) => {
-                    handle_download(&mut tr, info_hash_bs, peer_id).unwrap();
-                    break 'announceLoop;
-                }
-                None => {}
-            }
-        } else {
-            println!("skipping non udp announcer {}", announcer);
-            // get_request(base_url, &peer_id, &info_hash, total_bytes).unwrap();
-        }
-    }
-
-    _ = listener.join();
+    // _ = listener.join();
 }
 
 fn handle_udp_tracker(u: &str) -> Option<udp::Tracker> {

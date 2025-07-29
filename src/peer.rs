@@ -1,6 +1,7 @@
 use std::io;
 use std::io::Read;
 use std::io::Write;
+use std::net;
 use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::time;
@@ -11,7 +12,7 @@ pub struct Peer {
     pub ip_address: u32,
     pub port: u16,
     conn: Option<TcpStream>,
-    addr: Option<SocketAddr>,
+    addr: SocketAddr,
     am_choked: bool,
     am_interested: bool,
     peer_choked: bool,
@@ -24,7 +25,7 @@ impl Peer {
             ip_address: ip_address,
             port: port,
             conn: None,
-            addr: None,
+            addr: ip_to_socket_addr(ip_address, port),
             // https://wiki.theory.org/BitTorrentSpecification#Overview
             am_choked: true,
             am_interested: false,
@@ -34,6 +35,12 @@ impl Peer {
     }
 
     fn accept(self: &Self) {}
+
+    pub fn connect(self: &mut Self) -> Result<(), io::Error> {
+        self.conn = Some(TcpStream::connect_timeout(&self.addr, time::Duration::from_secs(10))?);
+        self.configure_connection()?;
+        Ok(())
+    }
 
     fn configure_connection(self: &mut Self) -> Result<(), io::Error> {
         if let None = self.conn {
@@ -133,17 +140,17 @@ impl Packet for HandshakePacket {
     }
 }
 
-// fn to_socket_addr(self: &Self) -> SocketAddr {
-//     SocketAddr::new(
-//         net::IpAddr::V4(net::Ipv4Addr::new(
-//             (ip >> 24) as u8,
-//             (ip >> 16) as u8,
-//             (ip >> 8) as u8,
-//             (ip) as u8,
-//         )),
-//         self.port,
-//     )
-// }
+fn ip_to_socket_addr(ip: u32, port: u16) -> SocketAddr {
+    SocketAddr::new(
+        net::IpAddr::V4(net::Ipv4Addr::new(
+            (ip >> 24) as u8,
+            (ip >> 16) as u8,
+            (ip >> 8) as u8,
+            (ip) as u8,
+        )),
+        port,
+    )
+}
 
 pub fn ip_to_str(ip: u32) -> String {
     format!(

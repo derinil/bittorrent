@@ -1,6 +1,5 @@
 use std::fs::File;
 use std::io::Read;
-use std::net::TcpStream;
 use std::thread;
 use std::time;
 use std::{env, io, process};
@@ -86,27 +85,32 @@ fn handle_download(
     peer_id: [u8; 20],
 ) -> Result<(), std::io::Error> {
     println!("downloading");
-    let seeders = tr.announce(info_hash, peer_id, 1)?;
+    let mut seeders = tr.announce(info_hash, peer_id, 1)?;
     if seeders.len() == 0 {
         println!("finishing download, no seeders found");
         return Ok(());
     }
 
-    for seeder in seeders {
+    for seeder in seeders.iter_mut() {
         // if seeder.addr.to_string() != "212.32.48.136:56462" {
         if seeder.ip_address != 3558879368 {
             continue;
         }
 
-TcpStream::connect(addr)
+        seeder.connect()?;
 
         match seeder.handshake(info_hash, peer_id) {
-            Ok(_) => {}
+            Ok(_) => {
+                println!("finished handshake")
+            }
             Err(err) => {
                 println!("failed to handshake {err}")
             }
         };
     }
+
+    println!("download done");
+
     Ok(())
 }
 

@@ -4,9 +4,27 @@ use std::io::Write;
 use std::net;
 use std::net::SocketAddr;
 use std::net::TcpStream;
+use std::sync;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::thread;
 use std::time;
 
 const BITTORRENT_PROTOCOL: &str = "BitTorrent protocol";
+
+pub enum MessageType {
+    KeepAlive = -1,
+    Choke,
+    Unchoke,
+    Interested,
+    NotInterested,
+    Have,
+    Bitfield,
+    Request,
+    Piece,
+    Cancel,
+    Port,
+}
 
 pub struct Peer {
     pub ip_address: u32,
@@ -17,6 +35,8 @@ pub struct Peer {
     am_interested: bool,
     peer_choked: bool,
     peer_interested: bool,
+
+    alive_keeper_thread: Option<thread::Thread>,
 }
 
 impl Peer {
@@ -31,14 +51,24 @@ impl Peer {
             am_interested: false,
             peer_choked: true,
             peer_interested: false,
+            alive_keeper_thread: None,
         }
     }
 
     fn accept(self: &Self) {}
 
     pub fn connect(self: &mut Self) -> Result<(), io::Error> {
-        self.conn = Some(TcpStream::connect_timeout(&self.addr, time::Duration::from_secs(10))?);
+        let c = TcpStream::connect_timeout(&self.addr, time::Duration::from_secs(10))?;
+        self.conn = Some(c);
         self.configure_connection()?;
+        Ok(())
+    }
+
+    pub fn disconnect(self: &mut Self) -> Result<(), io::Error> {
+        if let None = self.conn {
+            return Ok(());
+        }
+
         Ok(())
     }
 
@@ -48,11 +78,11 @@ impl Peer {
         }
 
         self.conn
-            .as_ref()
+            .as_mut()
             .unwrap()
             .set_read_timeout(Some(time::Duration::from_secs(10)))?;
         self.conn
-            .as_ref()
+            .as_mut()
             .unwrap()
             .set_write_timeout(Some(time::Duration::from_secs(10)))?;
 
@@ -82,6 +112,54 @@ impl Peer {
 
         Ok(())
     }
+
+    pub fn send_message(
+        self: &Self,
+        msg_type: MessageType,
+        payload: Option<&Vec<u8>>,
+    ) -> Result<(), io::Error> {
+        if let None = self.conn {
+            return Ok(());
+        }
+
+        let msg_buf = match msg_type {
+            MessageType::KeepAlive => create_peer_message(0, None, None),
+            MessageType::Choke
+            | MessageType::Unchoke
+            | MessageType::Interested
+            | MessageType::NotInterested => create_peer_message(1, Some(msg_type as u8), None),
+            MessageType::Have
+            | MessageType::Bitfield
+            | MessageType::Request
+            | MessageType::Piece
+            | MessageType::Cancel
+            | MessageType::Port => {
+                let mut payload_len: u32 = 0;
+                if let Some(p) = payload {
+                    payload_len = p.len() as u32;
+                }
+                create_peer_message(1 + payload_len, Some(msg_type as u8), payload)
+            }
+        };
+
+        self.conn.as_ref().unwrap().write_all(&msg_buf)?;
+
+        Ok(())
+    }
+}
+
+fn create_peer_message(len: u32, id: Option<u8>, payload: Option<&Vec<u8>>) -> Vec<u8> {
+    let mut buf = Vec::new();
+
+    buf.extend_from_slice(&len.to_be_bytes());
+    if let Some(i) = id {
+        buf.push(i);
+    }
+    if let Some(p) = payload {
+        buf.extend_from_slice(&p);
+    }
+
+    buf
 }
 
 trait Packet {

@@ -60,7 +60,7 @@ impl Tracker {
     pub fn announce(
         self: &mut Self,
         info_hash: [u8; 20],
-        peer_id: [u8; 20],
+        peer_id: &[u8; 20],
         event: u32,
     ) -> Result<Vec<peer::Peer>, std::io::Error> {
         let packet = self.create_announce_packet(info_hash, peer_id, event);
@@ -144,7 +144,7 @@ impl Tracker {
     fn create_announce_packet(
         self: &mut Self,
         info_hash: [u8; 20],
-        peer_id: [u8; 20],
+        peer_id: &[u8; 20],
         event: u32,
     ) -> Packet<98> {
         let mut buf = [0; 98];
@@ -161,7 +161,7 @@ impl Tracker {
         buf[12..16].copy_from_slice(&tx_id.to_be_bytes());
 
         buf[16..36].copy_from_slice(&info_hash);
-        buf[36..56].copy_from_slice(&peer_id);
+        buf[36..56].copy_from_slice(peer_id);
         buf[56..64].copy_from_slice(&self.downloaded.unwrap_or(0).to_be_bytes());
         buf[64..72].copy_from_slice(&self.left.unwrap_or(0).to_be_bytes());
         buf[72..80].copy_from_slice(&self.uploaded.unwrap_or(0).to_be_bytes());

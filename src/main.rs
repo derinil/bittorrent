@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::io::Read;
+use std::sync::OnceLock;
 use std::time;
 use std::{env, process};
 
@@ -10,6 +11,8 @@ mod server;
 mod torrent;
 mod udp;
 mod util;
+
+static PEER_ID: OnceLock<[u8; 20]> = OnceLock::new();
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -28,15 +31,15 @@ fn main() {
     file_content = file_content.trim_ascii_end().to_vec();
     println!("read torrent file {}", file_content.len());
 
-    let peer_id = create_peer_id();
+    PEER_ID.set(create_peer_id()).expect("failed to set peer id");
     println!(
         "created peer id {}",
-        String::from_utf8(peer_id.to_vec()).unwrap()
+        String::from_utf8(PEER_ID.get().unwrap().to_vec()).unwrap()
     );
 
     let torr = torrent::Torrent::parse(file_content).expect("failed to parse torrent");
 
-    let mut pool = peer_pool::SharedPeerPool::new().expect("failed to create shared peer pool");
+    let mut pool = peer_pool::SharedPeerPool::new(torr.info_hash).expect("failed to create shared peer pool");
     pool.start();
 
     'announceLoop: for announcer in torr.announce_urls.split_at(2).1 {
@@ -45,7 +48,7 @@ fn main() {
             // "tracker.opentrackr.org:1337"
             match handle_udp_tracker(u) {
                 Some(mut tr) => {
-                    handle_download(&mut pool, &mut tr, torr.info_hash, peer_id).unwrap();
+                    handle_download(&mut pool, &mut tr, torr.info_hash).unwrap();
                     break 'announceLoop;
                 }
                 None => {}
@@ -75,10 +78,9 @@ fn handle_download(
     pp: &mut peer_pool::SharedPeerPool,
     tr: &mut udp::Tracker,
     info_hash: [u8; 20],
-    peer_id: [u8; 20],
 ) -> Result<(), std::io::Error> {
     println!("downloading");
-    let mut seeders = tr.announce(info_hash, peer_id, 1)?;
+    let mut seeders = tr.announce(info_hash, PEER_ID.get().unwrap(), 1)?;
     if seeders.len() == 0 {
         println!("finishing download, no seeders found");
         return Ok(());
@@ -97,7 +99,7 @@ fn handle_download(
             continue;
         }
 
-        match seeders.get_mut(i).unwrap().handshake(info_hash, peer_id) {
+        match seeders.get_mut(i).unwrap().handshake(info_hash) {
             Ok(_) => {
                 println!("finished handshake")
             }

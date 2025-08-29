@@ -1,6 +1,7 @@
 use crate::{
     peer::{self, Peer},
     server::Server,
+    torrent,
 };
 use std::{
     io,
@@ -17,22 +18,46 @@ pub struct SharedPeerPool {
 struct PeerPool {
     peers: Vec<Peer>,
     server: Server,
+    // these are unconnected peers
+    backlog_peers: Vec<Peer>,
+    info_hash: [u8; 20],
 }
 
 const MAX_CONNECTIONS: usize = 64;
 
 impl SharedPeerPool {
-    pub fn new() -> Result<SharedPeerPool, io::Error> {
+    pub fn new(info_hash: [u8; 20]) -> Result<SharedPeerPool, io::Error> {
         Ok(SharedPeerPool {
             pool: Arc::new(Mutex::new(PeerPool {
                 peers: Vec::new(),
                 server: Server::start()?,
+                backlog_peers: Vec::new(),
+                info_hash: info_hash,
             })),
         })
     }
 
-    pub fn submit_peer(self: &mut Self, p: peer::Peer) {
+    pub fn submit_peer(self: &mut Self, mut p: peer::Peer) {
         println!("submitting peer {:?}", p);
+        if self.count_connected() >= MAX_CONNECTIONS {
+            self.pool.lock().unwrap().backlog_peers.push(p);
+            println!("put peer into backlog");
+            return;
+        }
+        match p.connect() {
+            Ok(_) => {}
+            Err(e) => {
+                println!("failed to connect {:?}", e);
+                return;
+            }
+        }
+        match p.handshake(self.pool.lock().unwrap().info_hash) {
+            Ok(_) => {}
+            Err(e) => {
+                println!("failed to handshake {:?}", e);
+                return;
+            }
+        }
         self.pool.lock().unwrap().peers.push(p);
         println!("submitted peer");
     }
@@ -51,6 +76,7 @@ impl SharedPeerPool {
                 thread::sleep(time::Duration::from_secs(3));
             }
         });
+        // TODO: clean this up better
     }
 
     pub fn run_once(self: &mut Self) {

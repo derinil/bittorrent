@@ -9,6 +9,7 @@ use std::thread;
 use std::time;
 
 use crate::torrent;
+use crate::PEER_ID;
 
 const BITTORRENT_PROTOCOL: &str = "BitTorrent protocol";
 
@@ -75,8 +76,7 @@ impl Peer {
         if let None = self.conn {
             return Ok(());
         }
-
-        Ok(())
+        self.conn.as_mut().unwrap().shutdown(net::Shutdown::Both)
     }
 
     fn configure_connection(self: &mut Self) -> Result<(), io::Error> {
@@ -92,21 +92,20 @@ impl Peer {
             .as_mut()
             .unwrap()
             .set_write_timeout(Some(time::Duration::from_secs(10)))?;
-        self.conn.as_mut().unwrap().set_nonblocking(true);
+        self.conn.as_mut().unwrap().set_nonblocking(true)?;
 
         Ok(())
     }
 
     pub fn handshake(
         self: &mut Self,
-        info_hash: [u8; 20],
-        peer_id: [u8; 20],
+        info_hash: [u8; 20]
     ) -> Result<(), io::Error> {
         if let None = self.conn {
             return Ok(());
         }
 
-        let packet = HandshakePacket::new(info_hash, peer_id).build();
+        let packet = HandshakePacket::new(info_hash).build();
 
         self.conn.as_ref().unwrap().write(&packet)?;
 
@@ -215,12 +214,12 @@ pub struct HandshakePacket {
 }
 
 impl HandshakePacket {
-    fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
+    fn new(info_hash: [u8; 20]) -> Self {
         Self {
             lenprot: 19,
             prot: BITTORRENT_PROTOCOL.as_bytes().try_into().unwrap(),
             info_hash: info_hash,
-            peer_id: peer_id,
+            peer_id: *PEER_ID.get().unwrap(),
         }
     }
 }

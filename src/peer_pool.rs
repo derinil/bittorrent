@@ -1,9 +1,10 @@
 use crate::{
     peer::{self, Peer},
     server::Server,
-    torrent,
+    torrent::{self, Block},
 };
 use std::{
+    collections::HashMap,
     io,
     net::{Ipv4Addr, TcpListener},
     sync::{Arc, Mutex},
@@ -23,6 +24,9 @@ struct PeerPool {
     backlog_peers: Vec<Peer>,
     info_hash: [u8; 20],
     active_threads: Vec<JoinHandle<peer::Peer>>,
+    receiving: Vec<Block>,
+    desired: Vec<Block>,
+    received: Vec<Block>,
 }
 
 const MAX_CONNECTIONS: usize = 64;
@@ -36,6 +40,9 @@ impl SharedPeerPool {
                 backlog_peers: Vec::new(),
                 info_hash: info_hash,
                 active_threads: Vec::new(),
+                receiving: Vec::new(),
+                desired: Vec::new(),
+                received: Vec::new(),
             })),
         })
     }
@@ -83,6 +90,10 @@ impl SharedPeerPool {
             }
         });
         // TODO: clean this up better
+    }
+
+    pub fn submit_desired_block(self: &mut Self, block: Block) {
+        self.pool.lock().unwrap().desired.push(block);
     }
 
     pub fn run_once(self: &mut Self) {

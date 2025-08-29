@@ -29,6 +29,8 @@ impl Block {
             requested_length: DEFAULT_BLOCK_LENGTH,
         }
     }
+
+    // pub fn 
 }
 
 impl Torrent {

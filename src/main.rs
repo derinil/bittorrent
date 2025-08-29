@@ -4,6 +4,8 @@ use std::sync::OnceLock;
 use std::time;
 use std::{env, process};
 
+use crate::torrent::{Block, DEFAULT_BLOCK_LENGTH, Torrent};
+
 mod bencoding;
 mod peer;
 mod peer_pool;
@@ -31,7 +33,9 @@ fn main() {
     file_content = file_content.trim_ascii_end().to_vec();
     println!("read torrent file {}", file_content.len());
 
-    PEER_ID.set(create_peer_id()).expect("failed to set peer id");
+    PEER_ID
+        .set(create_peer_id())
+        .expect("failed to set peer id");
     println!(
         "created peer id {}",
         String::from_utf8(PEER_ID.get().unwrap().to_vec()).unwrap()
@@ -39,7 +43,8 @@ fn main() {
 
     let torr = torrent::Torrent::parse(file_content).expect("failed to parse torrent");
 
-    let mut pool = peer_pool::SharedPeerPool::new(torr.info_hash).expect("failed to create shared peer pool");
+    let mut pool =
+        peer_pool::SharedPeerPool::new(torr.info_hash).expect("failed to create shared peer pool");
     pool.start();
 
     'announceLoop: for announcer in torr.announce_urls.split_at(2).1 {
@@ -48,7 +53,7 @@ fn main() {
             // "tracker.opentrackr.org:1337"
             match handle_udp_tracker(u) {
                 Some(mut tr) => {
-                    handle_download(&mut pool, &mut tr, torr.info_hash).unwrap();
+                    handle_download(&mut pool, &mut tr, torr).unwrap();
                     break 'announceLoop;
                 }
                 None => {}
@@ -77,10 +82,10 @@ fn handle_udp_tracker(u: &str) -> Option<udp::Tracker> {
 fn handle_download(
     pp: &mut peer_pool::SharedPeerPool,
     tr: &mut udp::Tracker,
-    info_hash: [u8; 20],
+    torr: Torrent,
 ) -> Result<(), std::io::Error> {
     println!("downloading");
-    let mut seeders = tr.announce(info_hash, PEER_ID.get().unwrap(), 1)?;
+    let mut seeders = tr.announce(torr.info_hash, PEER_ID.get().unwrap(), 1)?;
     if seeders.len() == 0 {
         println!("finishing download, no seeders found");
         return Ok(());
@@ -88,6 +93,15 @@ fn handle_download(
 
     for _ in 0..seeders.len() {
         pp.submit_peer(seeders.remove(0));
+    }
+
+    for piece_idx in 0..torr.piece_len - 1 {
+        let mut block_start = 0;
+        while block_start + DEFAULT_BLOCK_LENGTH < torr.piece_len {
+            pp.submit_desired_block(Block::new(torr.info_hash, piece_idx, block_start));
+            block_start += DEFAULT_BLOCK_LENGTH;
+        }
+        pp.submit_desired_block(Block::new(torr.info_hash, piece_idx, block_start));
     }
 
     println!("download done");

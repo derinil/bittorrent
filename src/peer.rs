@@ -8,8 +8,8 @@ use std::net::TcpStream;
 use std::thread;
 use std::time;
 
-use crate::torrent;
 use crate::PEER_ID;
+use crate::torrent;
 
 const BITTORRENT_PROTOCOL: &str = "BitTorrent protocol";
 
@@ -96,10 +96,7 @@ impl Peer {
         Ok(())
     }
 
-    pub fn handshake(
-        self: &mut Self,
-        info_hash: [u8; 20]
-    ) -> Result<(), io::Error> {
+    pub fn handshake(self: &mut Self, info_hash: [u8; 20]) -> Result<(), io::Error> {
         if let None = self.conn {
             return Ok(());
         }
@@ -158,14 +155,19 @@ impl Peer {
         Ok(())
     }
 
-    // non-blocking
     pub fn receive_message(self: &Self) -> Result<(), io::Error> {
         if let None = self.conn {
             return Ok(());
         }
 
-        let mut buf = [0; 1];
-        self.conn.as_ref().unwrap().read(&mut buf)?;
+        let mut buf = [0; 5];
+        self.conn.as_ref().unwrap().read_exact(&mut buf)?;
+        let data_len = u32::from_be_bytes(buf[0..4].try_into().unwrap()) as usize;
+        if data_len > 0 {
+            let mut data = Vec::new();
+            data.reserve_exact(data_len);
+            self.conn.as_ref().unwrap().read_exact(&mut data)?;
+        }
 
         Ok(())
     }

@@ -65,7 +65,7 @@ impl Peer {
     fn accept(self: &Self) {}
 
     pub fn connect(self: &mut Self) -> Result<(), io::Error> {
-        let c = TcpStream::connect_timeout(&self.addr, time::Duration::from_secs(10))?;
+        let c = TcpStream::connect_timeout(&self.addr, time::Duration::from_secs(3))?;
         self.conn = Some(c);
         self.configure_connection()?;
         Ok(())
@@ -92,6 +92,7 @@ impl Peer {
             .as_mut()
             .unwrap()
             .set_write_timeout(Some(time::Duration::from_secs(10)))?;
+        self.conn.as_mut().unwrap().set_nonblocking(true);
 
         Ok(())
     }
@@ -159,8 +160,24 @@ impl Peer {
         Ok(())
     }
 
-    pub fn receive_message() -> Result<(), io::Error> {
+    // non-blocking
+    pub fn receive_message(self: &Self) -> Result<(), io::Error> {
+        if let None = self.conn {
+            return Ok(());
+        }
+
+        let mut buf = [0; 1];
+        self.conn.as_ref().unwrap().read(&mut buf)?;
+
         Ok(())
+    }
+
+    pub fn get_peer_id(self: &Self) -> Result<Option<String>, std::string::FromUtf8Error> {
+        if let None = self.peer_id {
+            return Ok(None);
+        }
+
+        Ok(Some(String::from_utf8(self.peer_id.unwrap().to_vec())?))
     }
 }
 

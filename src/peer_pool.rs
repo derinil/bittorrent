@@ -3,7 +3,10 @@ use crate::{
     server::Server,
 };
 use std::{
-    io, net::{Ipv4Addr, TcpListener}, sync::{Arc, Mutex}, thread, time
+    io,
+    net::{Ipv4Addr, TcpListener},
+    sync::{Arc, Mutex},
+    thread, time,
 };
 
 #[derive(Clone)]
@@ -28,6 +31,16 @@ impl SharedPeerPool {
         })
     }
 
+    pub fn submit_peer(self: &mut Self, p: peer::Peer) {
+        println!("submitting peer {:?}", p);
+        self.pool.lock().unwrap().peers.push(p);
+        println!("submitted peer");
+    }
+
+    pub fn count_connected(self: &Self) -> usize {
+        self.pool.lock().unwrap().peers.iter().count()
+    }
+
     pub fn start(self: &mut Self) {
         let mut p = self.clone();
         thread::spawn(move || {
@@ -41,46 +54,13 @@ impl SharedPeerPool {
     }
 
     pub fn run_once(self: &mut Self) {
-        let mut p = self.pool.lock().unwrap();
-
-        let connected = p.peers.iter().count();
-
-        if connected >= MAX_CONNECTIONS {
-            p.server.s.incoming().for_each(|i| {
-                if let Err(e) = &i {
-                    println!("failed to get incoming connection {:?}", e);
-                }
-                if let Err(e) = &i.unwrap().shutdown(std::net::Shutdown::Both) {
-                    println!("failed to shutdown incoming connection {:?}", e);
-                }
-            });
-        }
-
-        if connected < MAX_CONNECTIONS {
-            match p.server.s.accept() {
-                Ok(c) => 'okLabel: {
-                    let ip: u32;
-                    if let std::net::IpAddr::V4(v4) = c.1.ip() {
-                        ip = v4.to_bits();
-                    } else {
-                        if let Err(e) = c.0.shutdown(std::net::Shutdown::Both) {
-                            println!("got error shutting down connection {}", e);
-                        }
-                        break 'okLabel;
-                    }
-                    p.peers.push(Peer::new(ip, c.1.port()));
-                    println!("accepted connection from {:?}", p.peers.last());
-                }
-                Err(e) => {
-                    println!("got error accepting connection {e:?}");
-                }
-            };
-        }
-
-        p.peers.iter().for_each(|p| {
-            println!("handling peer {:?}", p.peer_id);
-        });
-
+        let connected = self.count_connected();
         println!("got {connected} connected peers");
+
+        self.pool.lock().unwrap().peers.iter().for_each(|p| {
+            if let Some(s) = p.get_peer_id().unwrap() {
+                println!("handling peer {:?}", s);
+            }
+        });
     }
 }

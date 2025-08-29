@@ -5,11 +5,11 @@ use std::{env, process};
 
 mod bencoding;
 mod peer;
+mod peer_pool;
 mod server;
 mod torrent;
 mod udp;
 mod util;
-mod peer_pool;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -45,7 +45,7 @@ fn main() {
             // "tracker.opentrackr.org:1337"
             match handle_udp_tracker(u) {
                 Some(mut tr) => {
-                    handle_download(&mut tr, torr.info_hash, peer_id).unwrap();
+                    handle_download(&mut pool, &mut tr, torr.info_hash, peer_id).unwrap();
                     break 'announceLoop;
                 }
                 None => {}
@@ -72,6 +72,7 @@ fn handle_udp_tracker(u: &str) -> Option<udp::Tracker> {
 }
 
 fn handle_download(
+    pp: &mut peer_pool::SharedPeerPool,
     tr: &mut udp::Tracker,
     info_hash: [u8; 20],
     peer_id: [u8; 20],
@@ -83,22 +84,32 @@ fn handle_download(
         return Ok(());
     }
 
-    for seeder in seeders.iter_mut() {
-        // if seeder.addr.to_string() != "212.32.48.136:56462" {
-        if seeder.ip_address != 3558879368 {
+    let mut i = 0;
+    let mut max = seeders.len();
+    while i < max {
+        if let Err(e) = seeders.get_mut(i).unwrap().connect() {
+            println!(
+                "failed to connect to seeder {:?} {:?}",
+                seeders.get_mut(i).unwrap(),
+                e
+            );
+            i += 1;
             continue;
         }
 
-        seeder.connect()?;
-
-        match seeder.handshake(info_hash, peer_id) {
+        match seeders.get_mut(i).unwrap().handshake(info_hash, peer_id) {
             Ok(_) => {
                 println!("finished handshake")
             }
             Err(err) => {
-                println!("failed to handshake {err}")
+                println!("failed to handshake {err}");
+                i += 1;
+                continue;
             }
         };
+
+        pp.submit_peer(seeders.remove(i));
+        max -= 1;
     }
 
     println!("download done");

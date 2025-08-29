@@ -1,12 +1,14 @@
+use std::fmt;
 use std::io;
 use std::io::Read;
 use std::io::Write;
 use std::net;
 use std::net::SocketAddr;
 use std::net::TcpStream;
-use std::fmt;
 use std::thread;
 use std::time;
+
+use crate::torrent;
 
 const BITTORRENT_PROTOCOL: &str = "BitTorrent protocol";
 
@@ -34,7 +36,11 @@ pub struct Peer {
     peer_choked: bool,
     peer_interested: bool,
 
+    pub peer_id: Option<[u8; 20]>,
     alive_keeper_thread: Option<thread::Thread>,
+
+    peer_has: Vec<torrent::Block>,
+    we_have: Vec<torrent::Block>,
 }
 
 impl Peer {
@@ -49,7 +55,10 @@ impl Peer {
             am_interested: false,
             peer_choked: true,
             peer_interested: false,
+            peer_id: None,
             alive_keeper_thread: None,
+            peer_has: Vec::new(),
+            we_have: Vec::new(),
         }
     }
 
@@ -87,7 +96,11 @@ impl Peer {
         Ok(())
     }
 
-    pub fn handshake(self: &Self, info_hash: [u8; 20], peer_id: [u8; 20]) -> Result<(), io::Error> {
+    pub fn handshake(
+        self: &mut Self,
+        info_hash: [u8; 20],
+        peer_id: [u8; 20],
+    ) -> Result<(), io::Error> {
         if let None = self.conn {
             return Ok(());
         }
@@ -104,6 +117,7 @@ impl Peer {
         match HandshakePacket::parse(&buf[0..nread]) {
             Some(p) => {
                 println!("got peer id {}", str::from_utf8(&p.peer_id).unwrap());
+                self.peer_id = Some(p.peer_id);
             }
             None => {}
         }
@@ -142,6 +156,10 @@ impl Peer {
 
         self.conn.as_ref().unwrap().write_all(&msg_buf)?;
 
+        Ok(())
+    }
+
+    pub fn receive_message() -> Result<(), io::Error> {
         Ok(())
     }
 }

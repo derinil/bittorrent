@@ -11,6 +11,26 @@ pub struct Torrent {
     pub total_size: u64,
 }
 
+pub struct Block {
+    pub torrent_hash: [u8; 20],
+    pub piece_index: u64,
+    pub byte_offset: u64,
+    pub requested_length: u64,
+}
+
+pub const DEFAULT_BLOCK_LENGTH: u64 = 16384;
+
+impl Block {
+    pub fn new(torrent_hash: [u8; 20], piece_index: u64, byte_offset: u64) -> Block {
+        Block {
+            torrent_hash: torrent_hash,
+            piece_index: piece_index,
+            byte_offset: byte_offset,
+            requested_length: DEFAULT_BLOCK_LENGTH,
+        }
+    }
+}
+
 impl Torrent {
     pub fn parse(buf: Vec<u8>) -> Result<Self, io::Error> {
         let statements = bencoding::parse(&buf).unwrap();
@@ -132,7 +152,7 @@ impl Torrent {
                 return Err(easy_err("pieces length is not a multiple of 20"));
             }
             for i in 0..s.len() / 20 {
-                pieces.push(s[i..i+20].try_into().unwrap());
+                pieces.push(s[i..i + 20].try_into().unwrap());
             }
         }
 
@@ -172,7 +192,9 @@ impl Torrent {
         println!("got total pieces {}", s.get_total_piece_count());
 
         if s.get_total_piece_count() != s.piece_hashes.len() as u64 {
-            return Err(easy_err("total piece count is not equal to piece hashes length"));
+            return Err(easy_err(
+                "total piece count is not equal to piece hashes length",
+            ));
         }
 
         Ok(s)

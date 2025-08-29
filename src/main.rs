@@ -1,10 +1,7 @@
 use std::fs::File;
 use std::io::Read;
-use std::thread;
 use std::time;
-use std::{env, io, process};
-
-use crate::server::Server;
+use std::{env, process};
 
 mod bencoding;
 mod peer;
@@ -39,12 +36,8 @@ fn main() {
 
     let torr = torrent::Torrent::parse(file_content).expect("failed to parse torrent");
 
-    let listener = thread::spawn(|| match start_server() {
-        Ok(_) => {}
-        Err(err) => {
-            println!("server returned error: {}", err);
-        }
-    });
+    let mut pool = peer_pool::SharedPeerPool::new().expect("failed to create shared peer pool");
+    pool.start();
 
     'announceLoop: for announcer in torr.announce_urls.split_at(2).1 {
         if announcer.starts_with("udp://") {
@@ -62,8 +55,6 @@ fn main() {
             // get_request(base_url, &peer_id, &info_hash, total_bytes).unwrap();
         }
     }
-
-    _ = listener.join();
 }
 
 fn handle_udp_tracker(u: &str) -> Option<udp::Tracker> {
@@ -112,11 +103,6 @@ fn handle_download(
 
     println!("download done");
 
-    Ok(())
-}
-
-fn start_server() -> Result<(), io::Error> {
-    Server::start()?;
     Ok(())
 }
 

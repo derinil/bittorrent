@@ -92,7 +92,6 @@ impl Peer {
             .as_mut()
             .unwrap()
             .set_write_timeout(Some(time::Duration::from_secs(10)))?;
-        self.conn.as_mut().unwrap().set_nonblocking(true)?;
 
         Ok(())
     }

@@ -86,32 +86,8 @@ fn handle_download(
         return Ok(());
     }
 
-    let mut i = 0;
-    let mut max = seeders.len();
-    while i < max {
-        if let Err(e) = seeders.get_mut(i).unwrap().connect() {
-            println!(
-                "failed to connect to seeder {:?} {:?}",
-                seeders.get_mut(i).unwrap(),
-                e
-            );
-            i += 1;
-            continue;
-        }
-
-        match seeders.get_mut(i).unwrap().handshake(info_hash) {
-            Ok(_) => {
-                println!("finished handshake")
-            }
-            Err(err) => {
-                println!("failed to handshake {err}");
-                i += 1;
-                continue;
-            }
-        };
-
-        pp.submit_peer(seeders.remove(i));
-        max -= 1;
+    for _ in 0..seeders.len() {
+        pp.submit_peer(seeders.remove(0));
     }
 
     println!("download done");

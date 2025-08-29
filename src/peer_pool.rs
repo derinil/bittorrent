@@ -39,11 +39,6 @@ impl SharedPeerPool {
 
     pub fn submit_peer(self: &mut Self, mut p: peer::Peer) {
         println!("submitting peer {:?}", p);
-        if self.count_connected() >= MAX_CONNECTIONS {
-            self.pool.lock().unwrap().backlog_peers.push(p);
-            println!("put peer into backlog");
-            return;
-        }
         match p.connect() {
             Ok(_) => {}
             Err(e) => {
@@ -57,6 +52,14 @@ impl SharedPeerPool {
                 println!("failed to handshake {:?}", e);
                 return;
             }
+        }
+        if self.count_connected() >= MAX_CONNECTIONS {
+            if let Err(e) = p.disconnect() {
+                println!("failed to disconnect client bc of max connections {:?}", e);
+            }
+            self.pool.lock().unwrap().backlog_peers.push(p);
+            println!("put peer into backlog");
+            return;
         }
         self.pool.lock().unwrap().peers.push(p);
         println!("submitted peer");

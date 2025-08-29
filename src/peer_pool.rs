@@ -1,12 +1,10 @@
 use crate::{
-    peer::{self, Peer},
+    peer::{self, MessageType, Peer},
     server::Server,
-    torrent::{self, Block},
+    torrent::Block,
 };
 use std::{
-    collections::HashMap,
     io,
-    net::{Ipv4Addr, TcpListener},
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
     time,
@@ -60,7 +58,31 @@ impl SharedPeerPool {
             Ok(_) => {}
             Err(e) => {
                 println!("failed to handshake {:?}", e);
+                if let Err(e) = p.disconnect() {
+                    println!("failed to disconnect client bc of failed handshake {:?}", e);
+                }
                 return;
+            }
+        }
+        match p.receive_message() {
+            Ok(m) => 'msgMatch: {
+                if let None = m {
+                    break 'msgMatch;
+                }
+                if !matches!(m.unwrap().message_type, MessageType::Bitfield) {
+                    if let Err(e) = p.disconnect() {
+                        println!(
+                            "failed to disconnect client bc of unexpected message {:?}",
+                            e
+                        );
+                    }
+                }
+                println!("got bitfield");
+                // TODO: actually parse the bitfield
+                return;
+            }
+            Err(e) => {
+                println!("failed to receive bitfield message {:?}", e);
             }
         }
         if self.count_connected() >= MAX_CONNECTIONS {

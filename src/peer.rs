@@ -27,6 +27,29 @@ pub enum MessageType {
     Port,
 }
 
+impl MessageType {
+    pub fn from_u8(u: u8) -> Option<MessageType> {
+        match u {
+            0 => Some(MessageType::Choke),
+            1 => Some(MessageType::Unchoke),
+            2 => Some(MessageType::Interested),
+            3 => Some(MessageType::NotInterested),
+            4 => Some(MessageType::Have),
+            5 => Some(MessageType::Bitfield),
+            6 => Some(MessageType::Request),
+            7 => Some(MessageType::Piece),
+            8 => Some(MessageType::Cancel),
+            9 => Some(MessageType::Port),
+            10.. => None,
+        }
+    }
+}
+
+pub struct Message {
+    pub message_type: MessageType,
+    pub payload: Vec<u8>,
+}
+
 pub struct Peer {
     pub ip_address: u32,
     pub port: u16,
@@ -42,6 +65,8 @@ pub struct Peer {
 
     peer_has: Vec<torrent::Block>,
     we_have: Vec<torrent::Block>,
+
+    last_message_at: Option<time::Instant>,
 }
 
 impl Peer {
@@ -60,6 +85,7 @@ impl Peer {
             alive_keeper_thread: None,
             peer_has: Vec::new(),
             we_have: Vec::new(),
+            last_message_at: None,
         }
     }
 
@@ -155,21 +181,34 @@ impl Peer {
         Ok(())
     }
 
-    pub fn receive_message(self: &Self) -> Result<(), io::Error> {
+    pub fn receive_message(self: &Self) -> Result<Option<Message>, io::Error> {
         if let None = self.conn {
-            return Ok(());
+            return Ok(None);
         }
 
-        let mut buf = [0; 5];
+        let mut buf = [0; 4];
         self.conn.as_ref().unwrap().read_exact(&mut buf)?;
-        let data_len = u32::from_be_bytes(buf[0..4].try_into().unwrap()) as usize;
-        if data_len > 0 {
-            let mut data = Vec::new();
-            data.reserve_exact(data_len);
-            self.conn.as_ref().unwrap().read_exact(&mut data)?;
+
+        let data_len = u32::from_be_bytes(buf.try_into().unwrap()) as usize;
+        if data_len == 0 {
+            return Ok(Some(Message {
+                message_type: MessageType::KeepAlive,
+                payload: Vec::new(),
+            }));
         }
 
-        Ok(())
+        let mut data = vec![0; data_len];
+        self.conn.as_ref().unwrap().read_exact(&mut data)?;
+
+        let mt = MessageType::from_u8(data.remove(0));
+        if let None = mt {
+            return Ok(None);
+        }
+
+        Ok(Some(Message {
+            message_type: mt.unwrap(),
+            payload: data,
+        }))
     }
 
     pub fn get_peer_id(self: &Self) -> Result<Option<String>, std::string::FromUtf8Error> {

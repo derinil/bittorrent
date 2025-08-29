@@ -7,7 +7,8 @@ use std::{
     io,
     net::{Ipv4Addr, TcpListener},
     sync::{Arc, Mutex},
-    thread, time,
+    thread::{self, JoinHandle},
+    time,
 };
 
 #[derive(Clone)]
@@ -21,6 +22,7 @@ struct PeerPool {
     // these are unconnected peers
     backlog_peers: Vec<Peer>,
     info_hash: [u8; 20],
+    active_threads: Vec<JoinHandle<peer::Peer>>,
 }
 
 const MAX_CONNECTIONS: usize = 64;
@@ -33,6 +35,7 @@ impl SharedPeerPool {
                 server: Server::start()?,
                 backlog_peers: Vec::new(),
                 info_hash: info_hash,
+                active_threads: Vec::new(),
             })),
         })
     }
@@ -86,10 +89,28 @@ impl SharedPeerPool {
         let connected = self.count_connected();
         println!("got {connected} connected peers");
 
-        self.pool.lock().unwrap().peers.iter().for_each(|p| {
-            if let Some(s) = p.get_peer_id().unwrap() {
-                println!("handling peer {:?}", s);
+        let mut p = self.pool.lock().unwrap();
+
+        for _ in 0..p.peers.len() {
+            let peer = p.peers.remove(0);
+            let t = thread::spawn(|| -> peer::Peer {
+                if let Some(s) = peer.get_peer_id().unwrap() {
+                    println!("handling peer {:?}", s);
+                }
+                peer
+            });
+            p.active_threads.push(t);
+        }
+
+        let mut new_active_threads = Vec::new();
+        for _ in 0..p.active_threads.len() {
+            let t = p.active_threads.remove(0);
+            if t.is_finished() {
+                p.peers.push(t.join().unwrap());
+            } else {
+                new_active_threads.push(t);
             }
-        });
+        }
+        p.active_threads = new_active_threads;
     }
 }

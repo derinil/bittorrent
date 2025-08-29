@@ -12,6 +12,7 @@ mod server;
 mod torrent;
 mod udp;
 mod util;
+mod peer_pool;
 
 fn main() {
     let args: Vec<String> = env::args().collect();

@@ -18,16 +18,6 @@ struct Packet<const PACKET_SIZE: usize> {
     bytes: [u8; PACKET_SIZE],
 }
 
-fn print_ip(ip: u32) -> String {
-    format!(
-        "{}.{}.{}.{}",
-        (ip >> 24) as u8,
-        (ip >> 16) as u8,
-        (ip >> 8) as u8,
-        (ip) as u8
-    )
-}
-
 impl Tracker {
     pub fn new() -> Result<Self, std::io::Error> {
         Ok(Tracker {

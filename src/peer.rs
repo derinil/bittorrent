@@ -4,9 +4,7 @@ use std::io::Write;
 use std::net;
 use std::net::SocketAddr;
 use std::net::TcpStream;
-use std::sync;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::fmt;
 use std::thread;
 use std::time;
 
@@ -145,6 +143,12 @@ impl Peer {
         self.conn.as_ref().unwrap().write_all(&msg_buf)?;
 
         Ok(())
+    }
+}
+
+impl fmt::Debug for Peer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", ip_to_str(self.ip_address), self.port)
     }
 }
 

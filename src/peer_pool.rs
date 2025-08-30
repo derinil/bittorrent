@@ -20,14 +20,12 @@ pub struct PeerPool {
     receiving: Vec<Block>,
     desired: HashSet<Block>,
     received: Vec<Block>,
-    active_threads: Vec<PeerThread>,
+    active_peers: Vec<Peer>,
 }
 
 struct PeerThread {
-    thread: JoinHandle<()>,
-    can_respond: bool,
-    send_to_thread: mpsc::Sender<PeerThreadMessage>,
-    read_from_thread: mpsc::Receiver<PeerThreadMessage>,
+    peer: Peer,
+    thread: Option<JoinHandle<()>>,
 }
 
 enum PeerThreadMessage {
@@ -52,46 +50,47 @@ impl PeerPool {
             server: Server::start()?,
             backlog_peers: Vec::new(),
             info_hash: info_hash,
-            active_threads: Vec::new(),
+            active_peers: Vec::new(),
             receiving: Vec::new(),
             desired: HashSet::new(),
             received: Vec::new(),
         })
     }
 
-    pub fn submit_peer(self: &mut Self, mut p: Peer) {
-        println!("submitting peer {:?}", p);
-        match p.connect() {
-            Ok(_) => {}
-            Err(e) => {
-                println!("failed to connect {:?}", e);
-                return;
-            }
-        }
-        match p.handshake(self.info_hash) {
-            Ok(_) => {}
-            Err(e) => {
-                println!("failed to handshake {:?}", e);
-                if let Err(e) = p.disconnect() {
-                    println!("failed to disconnect client bc of failed handshake {:?}", e);
-                }
-                return;
-            }
-        }
-        if self.count_connected() >= MAX_CONNECTIONS {
-            if let Err(e) = p.disconnect() {
-                println!("failed to disconnect client bc of max connections {:?}", e);
-            }
-            self.backlog_peers.push(p);
-            println!("put peer into backlog");
-            return;
-        }
-        self.active_threads.push(handle_peer(p));
-        println!("started peer thread");
-    }
+    pub fn connect_peers(self: &mut Self, mut peers: Vec<Peer>) {
+        let mut ts: Vec<JoinHandle<()>> = Vec::new();
 
-    pub fn count_connected(self: &Self) -> usize {
-        self.peers.iter().count()
+        for _ in 0..peers.len() {
+            let mut peer = peers.remove(0);
+            let info_hash = self.info_hash.clone();
+            let t = thread::spawn(move || {
+                match peer.connect() {
+                    Ok(_) => {}
+                    Err(e) => {
+                        println!("failed to connect {:?}", e);
+                        return;
+                    }
+                }
+                match peer.handshake(info_hash) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        println!("failed to handshake {:?}", e);
+                        if let Err(e) = peer.disconnect() {
+                            println!("failed to disconnect client bc of failed handshake {:?}", e);
+                        }
+                        return;
+                    }
+                }
+            });
+            ts.push(t);
+        }
+
+        for _ in 0..ts.len() {
+            let t = ts.remove(0);
+            if let Err(e) = t.join() {
+                println!("failed to join thread {:?}", e);
+            }
+        }
     }
 
     pub fn submit_desired_block(self: &mut Self, block: Block) {
@@ -100,77 +99,73 @@ impl PeerPool {
 
     pub fn handle(self: &mut Self) {
         loop {
-            let mut i = 0;
-            while i < self.active_threads.len() {
-                if self.active_threads.get(i).unwrap().thread.is_finished() {
-                    if let Err(e) = self.active_threads.swap_remove(i).thread.join() {
-                        println!("failed to join peer thread {:?}", e);
-                    }
-                } else {
-                    i += 1;
-                }
-            }
+            // let mut i = 0;
+            // while i < self.active_threads.len() {
+            //     if self.active_threads.get(i).unwrap().thread.is_finished() {
+            //         if let Err(e) = self.active_threads.swap_remove(i).thread.join() {
+            //             println!("failed to join peer thread {:?}", e);
+            //         }
+            //     } else {
+            //         i += 1;
+            //     }
+            // }
 
-            println!("active connections {}", self.active_threads.len());
+            // println!("active connections {}", self.active_threads.len());
 
-            for at in &mut self.active_threads {
-                match at.read_from_thread.try_recv() {
-                    Ok(msg) => match msg {
-                        PeerThreadMessage::Busy => {
-                            at.can_respond = false;
-                        }
-                        PeerThreadMessage::CanRespond => {
-                            at.can_respond = true;
-                        }
-                        _ => {}
-                    },
-                    Err(_) => {}
-                }
-            }
+            // for at in &mut self.active_threads {
+            //     match at.read_from_thread.try_recv() {
+            //         Ok(msg) => match msg {
+            //             PeerThreadMessage::Busy => {
+            //                 at.can_respond = false;
+            //             }
+            //             PeerThreadMessage::CanRespond => {
+            //                 at.can_respond = true;
+            //             }
+            //             _ => {}
+            //         },
+            //         Err(_) => {}
+            //     }
+            // }
 
-            // Download
-            for at in &self.active_threads {
-                if let Err(e) = at.send_to_thread.send(PeerThreadMessage::GetPieces) {
-                    println!("failed to send thread msg {:?}", e);
-                    continue;
-                }
-                match at.read_from_thread.recv() {
-                    Ok(msg) => match msg {
-                        PeerThreadMessage::HasPieces(pieces) => {
-                            for block in &self.desired {
-                                if !pieces.contains(&block.piece_index) {
-                                    continue;
-                                }
-                                if let Err(e) = at
-                                    .send_to_thread
-                                    .send(PeerThreadMessage::SearchViablePeer(*block))
-                                {
-                                    println!("failed to send request block msg {:?}", e);
-                                }
-                                match at.read_from_thread.recv() {
-                                    Ok(msg) => {
-                                        match msg {
-                                            PeerThreadMessage::FoundViablePeer(b) => {
-                                                
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                    Err(e) => {
-                                        println!("failed to send request block msg {:?}", e);
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    },
-                    Err(e) => {
-                        println!("failed to read thread msg {:?}", e);
-                        continue;
-                    }
-                }
-            }
+            // // Download
+            // for at in &self.active_threads {
+            //     if let Err(e) = at.send_to_thread.send(PeerThreadMessage::GetPieces) {
+            //         println!("failed to send thread msg {:?}", e);
+            //         continue;
+            //     }
+            //     match at.read_from_thread.recv() {
+            //         Ok(msg) => match msg {
+            //             PeerThreadMessage::HasPieces(pieces) => {
+            //                 for block in &self.desired {
+            //                     if !pieces.contains(&block.piece_index) {
+            //                         continue;
+            //                     }
+            //                     if let Err(e) = at
+            //                         .send_to_thread
+            //                         .send(PeerThreadMessage::SearchViablePeer(*block))
+            //                     {
+            //                         println!("failed to send request block msg {:?}", e);
+            //                     }
+            //                     match at.read_from_thread.recv() {
+            //                         Ok(msg) => match msg {
+            //                             PeerThreadMessage::FoundViablePeer(b) => {}
+            //                             _ => {}
+            //                         },
+            //                         Err(e) => {
+            //                             println!("failed to send request block msg {:?}", e);
+            //                             continue;
+            //                         }
+            //                     }
+            //                 }
+            //             }
+            //             _ => {}
+            //         },
+            //         Err(e) => {
+            //             println!("failed to read thread msg {:?}", e);
+            //             continue;
+            //         }
+            //     }
+            // }
 
             // println!("waiting for viable peers");
             // for at in &mut self.active_threads {
@@ -212,7 +207,7 @@ impl PeerPool {
     }
 }
 
-fn handle_peer(mut peer: Peer) -> PeerThread {
+fn handle_peer(mut peer: Peer) {
     let send_to_thread = mpsc::channel();
     let read_from_thread = mpsc::channel();
 
@@ -376,10 +371,10 @@ fn handle_peer(mut peer: Peer) -> PeerThread {
         peer_thread_closure();
     });
 
-    PeerThread {
-        thread: t,
-        can_respond: true,
-        send_to_thread: send_to_thread.0,
-        read_from_thread: read_from_thread.1,
-    }
+    // PeerThread {
+    //     thread: t,
+    //     can_respond: true,
+    //     send_to_thread: send_to_thread.0,
+    //     read_from_thread: read_from_thread.1,
+    // }
 }

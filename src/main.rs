@@ -87,15 +87,13 @@ fn handle_download(
     torr: Torrent,
 ) -> Result<(), std::io::Error> {
     println!("downloading");
-    let mut seeders = tr.announce(torr.info_hash, PEER_ID.get().unwrap(), 1)?;
+    let seeders = tr.announce(torr.info_hash, PEER_ID.get().unwrap(), 1)?;
     if seeders.len() == 0 {
-        println!("finishing download, no seeders found");
+        println!("cancelling download, no seeders found");
         return Ok(());
     }
 
-    for _ in 0..seeders.len() {
-        pp.submit_peer(seeders.remove(0));
-    }
+    pp.connect_peers(seeders);
 
     for piece_idx in 0..torr.piece_len - 1 {
         let mut block_start = 0;

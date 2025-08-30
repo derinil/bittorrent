@@ -131,8 +131,6 @@ impl Peer {
         let mut buf = [0; 68];
         self.conn.as_ref().unwrap().read_exact(&mut buf)?;
 
-        println!("parsing handshake packet");
-
         match HandshakePacket::parse(&buf) {
             Some(p) => {
                 println!("got peer id {}", str::from_utf8(&p.peer_id).unwrap());

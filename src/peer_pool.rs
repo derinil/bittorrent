@@ -4,6 +4,7 @@ use crate::{
     torrent::Block,
 };
 use std::{
+    collections::HashSet,
     fs, io,
     sync::mpsc::{self, Receiver, Sender},
     thread::{self, JoinHandle},
@@ -17,19 +18,25 @@ pub struct PeerPool {
     backlog_peers: Vec<Peer>,
     info_hash: [u8; 20],
     receiving: Vec<Block>,
-    desired: Vec<Block>,
+    desired: HashSet<Block>,
     received: Vec<Block>,
-    cleanup_thread: Option<JoinHandle<()>>,
     active_threads: Vec<PeerThread>,
 }
 
 struct PeerThread {
     thread: JoinHandle<()>,
+    can_respond: bool,
     send_to_thread: mpsc::Sender<PeerThreadMessage>,
     read_from_thread: mpsc::Receiver<PeerThreadMessage>,
 }
 
 enum PeerThreadMessage {
+    Ignore,
+    CheckKeepAlive, // TODO: or some other message to receive messages
+    Busy,
+    CanRespond,
+    SearchViablePeer(Block),
+    FoundViablePeer(Block),
     RequestBlock(Block),
     DownloadedBlock(Block),
 }
@@ -45,9 +52,8 @@ impl PeerPool {
             info_hash: info_hash,
             active_threads: Vec::new(),
             receiving: Vec::new(),
-            desired: Vec::new(),
+            desired: HashSet::new(),
             received: Vec::new(),
-            cleanup_thread: None,
         })
     }
 
@@ -87,25 +93,91 @@ impl PeerPool {
     }
 
     pub fn submit_desired_block(self: &mut Self, block: Block) {
-        self.desired.push(block);
+        self.desired.insert(block);
     }
 
-    // Starts a thread that joins finished threads and peers and runs maintenance
     pub fn handle(self: &mut Self) {
         loop {
-            // Find a willing peer to request a block
-            println!("active connections {}", self.active_threads.len());
-        }
-    }
-
-    pub fn cleanup(self: &mut Self) {
-        if let Some(t) = self.cleanup_thread.take() {
-            match t.join() {
-                Ok(_) => {}
-                Err(err) => {
-                    println!("failed to join cleanup thread {:?}", err);
+            let mut i = 0;
+            while i < self.active_threads.len() {
+                if self.active_threads.get(i).unwrap().thread.is_finished() {
+                    if let Err(e) = self.active_threads.swap_remove(i).thread.join() {
+                        println!("failed to join peer thread {:?}", e);
+                    }
+                } else {
+                    i += 1;
                 }
             }
+
+            println!("active connections {}", self.active_threads.len());
+
+            for at in &mut self.active_threads {
+                match at.read_from_thread.try_recv() {
+                    Ok(msg) => match msg {
+                        PeerThreadMessage::Busy => {
+                            at.can_respond = false;
+                        }
+                        PeerThreadMessage::CanRespond => {
+                            at.can_respond = true;
+                        }
+                        _ => {}
+                    },
+                    Err(_) => {}
+                }
+            }
+
+            // Download
+            // TODO: this is wasteful, loop through active threads and find apprpriate blocks for them instead
+            for block in &self.desired {
+                for at in &self.active_threads {
+                    if !at.can_respond {
+                        continue;
+                    }
+                    if let Err(e) = at
+                        .send_to_thread
+                        .send(PeerThreadMessage::SearchViablePeer(*block))
+                    {
+                        println!("failed to send thread msg {:?}", e);
+                    } else {
+                        continue;
+                    }
+                }
+            }
+
+            for at in &mut self.active_threads {
+                if !at.can_respond {
+                    continue;
+                }
+                let msg_err = at.read_from_thread.recv();
+                if let Err(e) = msg_err {
+                    println!("failed to read thread msg {:?}", e);
+                    continue;
+                }
+                match msg_err.unwrap() {
+                    PeerThreadMessage::FoundViablePeer(block) => {
+                        if let Err(e) = at
+                            .send_to_thread
+                            .send(PeerThreadMessage::RequestBlock(block))
+                        {
+                            println!("failed to send thread msg {:?}", e);
+                        }
+                        self.desired.remove(&block);
+                        at.can_respond = false;
+                        continue;
+                    }
+                    PeerThreadMessage::CanRespond => {
+                        // this will lag by one loop but this is fine
+                        // as it will be marked as not responsibve while searching for peers
+                        at.can_respond = true;
+                    }
+                    PeerThreadMessage::Busy => {
+                        at.can_respond = false;
+                    }
+                    _ => {}
+                }
+            }
+
+            // TODO: Upload
         }
     }
 }
@@ -114,7 +186,119 @@ fn handle_peer(mut peer: Peer) -> PeerThread {
     let send_to_thread = mpsc::channel();
     let read_from_thread = mpsc::channel();
 
-    let t = thread::spawn(move || {
+    let peer_read_thread_message =
+        |p: &mut Peer, recv: &Receiver<PeerThreadMessage>, sender: &Sender<PeerThreadMessage>| {
+            match recv.recv().unwrap() {
+                PeerThreadMessage::SearchViablePeer(block) => {
+                    if !p.am_choked && p.has_piece(block.piece_index) {
+                        p.set_interested(true).unwrap();
+                        sender
+                            .send(PeerThreadMessage::FoundViablePeer(block))
+                            .unwrap();
+                    }
+                    sender.send(PeerThreadMessage::Ignore).unwrap();
+                }
+                PeerThreadMessage::RequestBlock(block) => {
+                    if !p.has_piece(block.piece_index) {
+                        return;
+                    }
+                    if !p.am_interested {
+                        p.send_message(MessageType::Interested, None)
+                            .expect("failed to send interested message");
+                        p.am_interested = true;
+                    }
+                    let mut payload: Vec<u8> = Vec::new();
+                    payload.extend(block.piece_index.to_be_bytes());
+                    payload.extend(block.byte_offset.to_be_bytes());
+                    payload.extend(block.requested_length.to_be_bytes());
+                    p.send_message(MessageType::Request, Some(&payload))
+                        .expect("failed to send request message");
+                    println!("sent request")
+                }
+                // PeerThreadMessage::DownloadedBlock(block) => {
+                //     let mut payload: Vec<u8> = Vec::new();
+                //     payload.extend(block.piece_index.to_be_bytes());
+                //     payload.extend(block.byte_offset.to_be_bytes());
+                //     payload.extend(block.requested_length.to_be_bytes());
+                //     p.send_message(MessageType::Cancel, Some(&payload))
+                //         .expect("failed to send cancel message");
+                //     println!("sent cancel")
+                // }
+                _ => {}
+            }
+        };
+
+    let peer_receive_message = |p: &mut Peer, sender: &Sender<PeerThreadMessage>| {
+        match p.receive_message() {
+            Ok(msg) => {
+                match msg.message_type {
+                    MessageType::KeepAlive => {}
+                    MessageType::Choke => {
+                        p.am_choked = true;
+                    }
+                    MessageType::Unchoke => {
+                        p.am_choked = false;
+                    }
+                    MessageType::Interested => {
+                        p.peer_interested = true;
+                    }
+                    MessageType::NotInterested => {
+                        p.peer_interested = false;
+                    }
+                    MessageType::Have => {
+                        if msg.payload.len() != 4 {
+                            println!(
+                                "peer sent incorrect have message length {}",
+                                msg.payload.len()
+                            );
+                            return;
+                        }
+                        let have_idx = u32::from_be_bytes(msg.payload.try_into().unwrap());
+                        p.peer_has.insert(have_idx);
+                    }
+                    MessageType::Bitfield => {
+                        p.use_bitfield(&msg.payload);
+                        println!("peer gotbitfield {:?} {}", p.peer_has, p.peer_has.len());
+                    }
+                    MessageType::Request => {
+                        // TODO:
+                    }
+                    MessageType::Piece => {
+                        let piece_idx =
+                            u32::from_be_bytes(msg.payload.get(0..4).unwrap().try_into().unwrap());
+                        let byte_offset =
+                            u32::from_be_bytes(msg.payload.get(4..8).unwrap().try_into().unwrap());
+                        println!("downloading piece {} {}", piece_idx, byte_offset);
+                        let _ = fs::create_dir("./download");
+                        fs::write(
+                            format!("./download/{}-{}", piece_idx, byte_offset),
+                            msg.payload.get(8..).unwrap(),
+                        )
+                        .expect("failed to write block file");
+                        sender
+                            .send(PeerThreadMessage::DownloadedBlock(Block::new(
+                                piece_idx,
+                                byte_offset,
+                            )))
+                            .unwrap();
+                    }
+                    MessageType::Cancel => {
+                        // TODO:
+                    }
+                    MessageType::Port => {
+                        // TODO: dht
+                    }
+                };
+                p.last_message_at = Some(time::Instant::now());
+            }
+            Err(err) => {
+                println!("failed to receive message {}", err);
+                return;
+            }
+        }
+    };
+
+    let peer_thread_closure = move || {
         let recv: Receiver<PeerThreadMessage> = send_to_thread.1;
         let send: Sender<PeerThreadMessage> = read_from_thread.0;
 
@@ -123,6 +307,8 @@ fn handle_peer(mut peer: Peer) -> PeerThread {
         }
 
         loop {
+            peer_read_thread_message(&mut peer, &recv, &send);
+
             let has_data = match peer.has_data() {
                 Ok(b) => b,
                 Err(e) => {
@@ -133,131 +319,9 @@ fn handle_peer(mut peer: Peer) -> PeerThread {
                 }
             };
             if has_data {
-                match peer.receive_message() {
-                    Ok(msg) => {
-                        match msg.message_type {
-                            MessageType::KeepAlive => {}
-                            MessageType::Choke => {
-                                peer.am_choked = true;
-                            }
-                            MessageType::Unchoke => {
-                                peer.am_choked = false;
-                            }
-                            MessageType::Interested => {
-                                peer.peer_interested = true;
-                            }
-                            MessageType::NotInterested => {
-                                peer.peer_interested = false;
-                            }
-                            MessageType::Have => {
-                                if msg.payload.len() != 4 {
-                                    println!(
-                                        "peer sent incorrect have message length {}",
-                                        msg.payload.len()
-                                    );
-                                    return;
-                                }
-                                let have_idx = u32::from_be_bytes(msg.payload.try_into().unwrap());
-                                peer.peer_has.insert(have_idx);
-                            }
-                            MessageType::Bitfield => {
-                                peer.use_bitfield(&msg.payload);
-                                println!(
-                                    "peer gotbitfield {:?} {}",
-                                    peer.peer_has,
-                                    peer.peer_has.len()
-                                );
-                            }
-                            MessageType::Request => {
-                                // TODO:
-                            }
-                            MessageType::Piece => {
-                                let piece_idx = u32::from_be_bytes(
-                                    msg.payload.get(0..4).unwrap().try_into().unwrap(),
-                                );
-                                let byte_offset = u32::from_be_bytes(
-                                    msg.payload.get(4..8).unwrap().try_into().unwrap(),
-                                );
-                                println!("downloading piece {} {}", piece_idx, byte_offset);
-                                fs::create_dir("./download").expect("failed to mkdir");
-                                fs::write(
-                                    format!("./download/{}-{}", piece_idx, byte_offset),
-                                    msg.payload.get(8..).unwrap(),
-                                )
-                                .expect("failed to write block file");
-                                send.send(PeerThreadMessage::DownloadedBlock(Block::new(
-                                    piece_idx,
-                                    byte_offset,
-                                )))
-                                .expect("failed to send peer thread message");
-                            }
-                            MessageType::Cancel => {
-                                // TODO:
-                            }
-                            MessageType::Port => {
-                                // TODO: dht
-                            }
-                        };
-                        peer.last_message_at = Some(time::Instant::now());
-                    }
-                    Err(err) => {
-                        println!("failed to receive message {}", err);
-                        return;
-                    }
-                }
-            }
-
-            // Block with iter?
-            // Request from one at a time
-
-            let msgs: Vec<PeerThreadMessage> = recv.try_iter().collect();
-            let mut new_msgs = Vec::new();
-            // some messages can cancel each other out, like request and downloaded
-            'mainLoop: for (idx, msg) in msgs.iter().enumerate() {
-                if idx >= msgs.len() - 1 {
-                    new_msgs.push(msg);
-                    continue;
-                }
-                if let PeerThreadMessage::RequestBlock(b) = msg {
-                    for next_msg in msgs.get(idx + 1..).unwrap() {
-                        if let PeerThreadMessage::DownloadedBlock(db) = next_msg {
-                            if b == db {
-                                continue 'mainLoop;
-                            }
-                        }
-                    }
-                }
-                new_msgs.push(msg);
-            }
-            for msg in new_msgs {
-                match msg {
-                    PeerThreadMessage::RequestBlock(block) => {
-                        if !peer.has_piece(block.piece_index) {
-                            continue;
-                        }
-                        if !peer.am_interested {
-                            peer.send_message(MessageType::Interested, None)
-                                .expect("failed to send interested message");
-                            peer.am_interested = true;
-                        }
-                        let mut payload: Vec<u8> = Vec::new();
-                        payload.extend(block.piece_index.to_be_bytes());
-                        payload.extend(block.byte_offset.to_be_bytes());
-                        payload.extend(block.requested_length.to_be_bytes());
-                        peer.send_message(MessageType::Request, Some(&payload))
-                            .expect("failed to send request message");
-                        println!("sent request")
-                    }
-                    PeerThreadMessage::DownloadedBlock(block) => {
-                        let mut payload: Vec<u8> = Vec::new();
-                        payload.extend(block.piece_index.to_be_bytes());
-                        payload.extend(block.byte_offset.to_be_bytes());
-                        payload.extend(block.requested_length.to_be_bytes());
-                        peer.send_message(MessageType::Cancel, Some(&payload))
-                            .expect("failed to send cancel message");
-                        println!("sent cancel")
-                    }
-                }
+                send.send(PeerThreadMessage::Busy).unwrap();
+                peer_receive_message(&mut peer, &send);
+                send.send(PeerThreadMessage::CanRespond).unwrap();
             }
 
             if let Some(t) = peer.last_message_at {
@@ -267,10 +331,15 @@ fn handle_peer(mut peer: Peer) -> PeerThread {
                 }
             }
         }
+    };
+
+    let t = thread::spawn(|| {
+        peer_thread_closure();
     });
 
     PeerThread {
         thread: t,
+        can_respond: true,
         send_to_thread: send_to_thread.0,
         read_from_thread: read_from_thread.1,
     }

@@ -238,6 +238,14 @@ impl Peer {
             self.peer_has.insert(*t as u32);
         });
     }
+
+    pub fn set_interested(self: &mut Self, interested: bool) -> Result<(), io::Error> {
+        if self.am_interested != interested && interested {
+            self.send_message(MessageType::Interested, None)?;
+        }
+        self.am_interested = interested;
+        Ok(())
+    }
 }
 
 impl Drop for Peer {

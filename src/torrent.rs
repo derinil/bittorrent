@@ -13,7 +13,7 @@ pub struct Torrent {
     pub total_size: u64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Block {
     pub piece_index: u32,
     pub byte_offset: u32,
@@ -27,14 +27,6 @@ impl Block {
             byte_offset: byte_offset,
             requested_length: DEFAULT_BLOCK_LENGTH,
         }
-    }
-}
-
-impl PartialEq for Block {
-    fn eq(&self, other: &Self) -> bool {
-        self.piece_index == other.piece_index
-            && self.byte_offset == other.byte_offset
-            && self.requested_length == other.requested_length
     }
 }
 

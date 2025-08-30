@@ -46,17 +46,17 @@ impl PeerPool {
     }
 
     pub fn connect_peers(self: &mut Self, mut peers: Vec<Peer>) {
-        let mut ts: Vec<JoinHandle<()>> = Vec::new();
+        let mut ts: Vec<JoinHandle<Option<Peer>>> = Vec::new();
 
         for _ in 0..peers.len() {
             let mut peer = peers.remove(0);
             let info_hash = self.info_hash.clone();
-            let t = thread::spawn(move || {
+            let t = thread::spawn(move || -> Option<Peer> {
                 match peer.connect() {
                     Ok(_) => {}
                     Err(e) => {
                         println!("failed to connect {:?}", e);
-                        return;
+                        return None;
                     }
                 }
                 match peer.handshake(info_hash) {
@@ -66,17 +66,25 @@ impl PeerPool {
                         if let Err(e) = peer.disconnect() {
                             println!("failed to disconnect client bc of failed handshake {:?}", e);
                         }
-                        return;
+                        return None;
                     }
                 }
+                Some(peer)
             });
             ts.push(t);
         }
 
         for _ in 0..ts.len() {
             let t = ts.remove(0);
-            if let Err(e) = t.join() {
-                println!("failed to join thread {:?}", e);
+            match t.join() {
+                Ok(p) => {
+                    if let Some(peer) = p {
+                        self.active_peers.push(peer);
+                    }
+                }
+                Err(e) => {
+                    println!("failed to join thread {:?}", e);
+                }
             }
         }
     }
@@ -87,8 +95,6 @@ impl PeerPool {
 
     pub fn handle(self: &mut Self) {
         loop {
-            println!("handling {} connections", self.active_peers.len());
-
             // receive messages
             let mut ts: Vec<JoinHandle<Option<Peer>>> = Vec::new();
 
@@ -161,7 +167,7 @@ impl PeerPool {
 
             for _ in 0..self.thread_peers.len() {
                 let tp = self.thread_peers.swap_remove(0);
-                if tp.thread.is_finished() {
+                if self.active_peers.len() > 0 && tp.thread.is_finished() {
                     match tp.thread.join() {
                         Ok(p) => {
                             if let Err(e) = p {

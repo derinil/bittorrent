@@ -13,6 +13,7 @@ use crate::PEER_ID;
 use crate::util::easy_err;
 
 const BITTORRENT_PROTOCOL: &str = "BitTorrent protocol";
+pub static KEEP_ALIVE_MAX_DURATION: time::Duration = time::Duration::from_secs(120);
 
 pub enum MessageType {
     KeepAlive = -1,
@@ -60,14 +61,12 @@ pub struct Peer {
     pub am_interested: bool,
     pub peer_choked: bool,
     pub peer_interested: bool,
-
     pub peer_id: Option<[u8; 20]>,
-    alive_keeper_thread: Option<thread::Thread>,
 
     // List of piece indexes
     pub peer_has: HashSet<u32>,
 
-    last_message_at: Option<time::Instant>,
+    pub last_message_at: Option<time::Instant>,
 }
 
 impl Peer {
@@ -83,7 +82,6 @@ impl Peer {
             peer_choked: true,
             peer_interested: false,
             peer_id: None,
-            alive_keeper_thread: None,
             peer_has: HashSet::new(),
             last_message_at: None,
         }
@@ -181,13 +179,21 @@ impl Peer {
         Ok(())
     }
 
-    pub fn receive_message(self: &Self) -> Result<Message, io::Error> {
+    pub fn has_data(self: &Self) -> Result<bool, io::Error> {
         if let None = self.conn {
             return Err(easy_err("not connected"));
         }
 
-        // TODO:
-        // self.conn.as_ref().unwrap().peek(buf)
+        let mut buf = [0 as u8; 10];
+        let nread = self.conn.as_ref().unwrap().peek(&mut buf)?;
+
+        Ok(nread > 0)
+    }
+
+    pub fn receive_message(self: &Self) -> Result<Message, io::Error> {
+        if let None = self.conn {
+            return Err(easy_err("not connected"));
+        }
 
         let mut buf = [0; 4];
         self.conn.as_ref().unwrap().read_exact(&mut buf)?;
@@ -222,12 +228,12 @@ impl Peer {
         Ok(Some(String::from_utf8(self.peer_id.unwrap().to_vec())?))
     }
 
-    pub fn has_piece(self: &Self) -> bool {
-        false
+    pub fn has_piece(self: &Self, piece_idx: u32) -> bool {
+        self.peer_has.contains(&piece_idx)
     }
 
     // this will overwrite peer's has list
-    pub fn parse_bitfield(self: &mut Self, bitfield: &Vec<u8>) {
+    pub fn use_bitfield(self: &mut Self, bitfield: &Vec<u8>) {
         let v = parse_bitfield(bitfield);
         v.iter().for_each(|t| {
             self.peer_has.insert(*t as u32);

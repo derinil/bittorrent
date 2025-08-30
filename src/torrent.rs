@@ -6,24 +6,22 @@ use std::io;
 pub struct Torrent {
     pub info_hash: [u8; 20],
     pub announce_urls: Vec<String>,
-    pub piece_len: u64,
+    pub piece_len: u32,
     pub piece_hashes: Vec<[u8; 20]>,
     pub total_size: u64,
 }
 
 pub struct Block {
-    pub torrent_hash: [u8; 20],
-    pub piece_index: u64,
-    pub byte_offset: u64,
-    pub requested_length: u64,
+    pub piece_index: u32,
+    pub byte_offset: u32,
+    pub requested_length: u32,
 }
 
-pub const DEFAULT_BLOCK_LENGTH: u64 = 16384;
+pub const DEFAULT_BLOCK_LENGTH: u32 = 16384;
 
 impl Block {
-    pub fn new(torrent_hash: [u8; 20], piece_index: u64, byte_offset: u64) -> Block {
+    pub fn new(piece_index: u32, byte_offset: u32) -> Block {
         Block {
-            torrent_hash: torrent_hash,
             piece_index: piece_index,
             byte_offset: byte_offset,
             requested_length: DEFAULT_BLOCK_LENGTH,
@@ -180,7 +178,7 @@ impl Torrent {
         let s = Self {
             info_hash: info_hash_bs,
             announce_urls: announce_urls,
-            piece_len: piece_length as u64,
+            piece_len: piece_length as u32,
             total_size: total_len,
             piece_hashes: pieces,
         };

@@ -63,6 +63,8 @@ fn main() {
             // get_request(base_url, &peer_id, &info_hash, total_bytes).unwrap();
         }
     }
+
+    pool.cleanup();
 }
 
 fn handle_udp_tracker(u: &str) -> Option<udp::Tracker> {
@@ -98,10 +100,10 @@ fn handle_download(
     for piece_idx in 0..torr.piece_len - 1 {
         let mut block_start = 0;
         while block_start + DEFAULT_BLOCK_LENGTH < torr.piece_len {
-            pp.submit_desired_block(Block::new(torr.info_hash, piece_idx, block_start));
+            pp.submit_desired_block(Block::new(piece_idx, block_start));
             block_start += DEFAULT_BLOCK_LENGTH;
         }
-        pp.submit_desired_block(Block::new(torr.info_hash, piece_idx, block_start));
+        pp.submit_desired_block(Block::new(piece_idx, block_start));
     }
 
     println!("download done");

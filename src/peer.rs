@@ -244,6 +244,10 @@ impl Peer {
         self.am_interested = interested;
         Ok(())
     }
+
+    pub fn can_download(&self) -> bool {
+        !self.am_choked
+    }
 }
 
 impl Drop for Peer {

@@ -155,6 +155,15 @@ impl PeerPool {
                         println!("fetching block {} {}", block.piece_index, block.byte_offset);
                         tap.set_interested(true)?;
 
+                        let mut payload: Vec<u8> = Vec::new();
+                        payload.extend(block.piece_index.to_be_bytes());
+                        payload.extend(block.byte_offset.to_be_bytes());
+                        payload.extend(block.requested_length.to_be_bytes());
+                        tap.send_message(MessageType::Request, Some(&payload))
+                            .unwrap();
+
+                        handle_peer(&mut tap).unwrap();
+
                         Ok(tap)
                     });
 

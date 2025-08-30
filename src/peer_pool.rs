@@ -39,7 +39,6 @@ struct PeerThread {
 
 enum PeerThreadMessage {
     RequestBlock(Block),
-    DownloadingBlock(Block),
     DownloadedBlock(Block),
 }
 
@@ -89,14 +88,8 @@ impl SharedPeerPool {
             println!("put peer into backlog");
             return;
         }
-        let pt = handle_peer(p);
-        for block in &self.pool.lock().unwrap().desired {
-            pt.send_to_thread
-                .send(PeerThreadMessage::RequestBlock(*block))
-                .unwrap();
-        }
-        self.pool.lock().unwrap().active_threads.push(pt);
-        println!("submitted peer");
+        self.pool.lock().unwrap().active_threads.push(handle_peer(p));
+        println!("started peer thread");
     }
 
     pub fn count_connected(self: &Self) -> usize {
@@ -105,12 +98,6 @@ impl SharedPeerPool {
 
     pub fn submit_desired_block(self: &mut Self, block: Block) {
         self.pool.lock().unwrap().desired.push(block);
-        let p = self.pool.lock().unwrap();
-        for at in &p.active_threads {
-            at.send_to_thread
-                .send(PeerThreadMessage::RequestBlock(block))
-                .unwrap();
-        }
     }
 
     // Starts a thread that joins finished threads and peers and runs maintenance
@@ -252,7 +239,29 @@ fn handle_peer(mut peer: Peer) -> PeerThread {
                 }
             }
 
-            for msg in recv.try_iter() {
+            // Block with iter?
+            // Request from one at a time
+
+            let msgs: Vec<PeerThreadMessage> = recv.try_iter().collect();
+            let mut new_msgs = Vec::new();
+            // some messages can cancel each other out, like request and downloaded
+            'mainLoop: for (idx, msg) in msgs.iter().enumerate() {
+                if idx >= msgs.len() - 1 {
+                    new_msgs.push(msg);
+                    continue;
+                }
+                if let PeerThreadMessage::RequestBlock(b) = msg {
+                    for next_msg in msgs.get(idx + 1..).unwrap() {
+                        if let PeerThreadMessage::DownloadedBlock(db) = next_msg {
+                            if b == db {
+                                continue 'mainLoop;
+                            }
+                        }
+                    }
+                }
+                new_msgs.push(msg);
+            }
+            for msg in new_msgs {
                 match msg {
                     PeerThreadMessage::RequestBlock(block) => {
                         if !peer.has_piece(block.piece_index) {
@@ -280,7 +289,6 @@ fn handle_peer(mut peer: Peer) -> PeerThread {
                             .expect("failed to send cancel message");
                         println!("sent cancel")
                     }
-                    _ => {}
                 }
             }
 

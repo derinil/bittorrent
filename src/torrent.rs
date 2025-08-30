@@ -3,6 +3,8 @@ use percent_encoding::{self, NON_ALPHANUMERIC};
 use sha1_smol;
 use std::io;
 
+pub const DEFAULT_BLOCK_LENGTH: u32 = 16384;
+
 pub struct Torrent {
     pub info_hash: [u8; 20],
     pub announce_urls: Vec<String>,
@@ -18,8 +20,6 @@ pub struct Block {
     pub requested_length: u32,
 }
 
-pub const DEFAULT_BLOCK_LENGTH: u32 = 16384;
-
 impl Block {
     pub fn new(piece_index: u32, byte_offset: u32) -> Block {
         Block {
@@ -27,6 +27,14 @@ impl Block {
             byte_offset: byte_offset,
             requested_length: DEFAULT_BLOCK_LENGTH,
         }
+    }
+}
+
+impl PartialEq for Block {
+    fn eq(&self, other: &Self) -> bool {
+        self.piece_index == other.piece_index
+            && self.byte_offset == other.byte_offset
+            && self.requested_length == other.requested_length
     }
 }
 

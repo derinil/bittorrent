@@ -6,7 +6,6 @@ use std::io::Write;
 use std::net;
 use std::net::SocketAddr;
 use std::net::TcpStream;
-use std::thread;
 use std::time;
 
 use crate::PEER_ID;

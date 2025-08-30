@@ -115,6 +115,7 @@ impl Peer {
             .as_mut()
             .unwrap()
             .set_write_timeout(Some(time::Duration::from_secs(10)))?;
+        self.conn.as_mut().unwrap().set_nonblocking(false)?;
 
         Ok(())
     }
@@ -204,7 +205,11 @@ impl Peer {
         }
 
         let mut data = vec![0; data_len];
-        self.conn.as_ref().unwrap().read_exact(&mut data)?;
+        let mut total_read = 0;
+        while total_read < data_len {
+            let nread = self.conn.as_ref().unwrap().read(&mut data[total_read..])?;
+            total_read += nread;
+        }
 
         let mt = MessageType::from_u8(data.remove(0));
         if let None = mt {

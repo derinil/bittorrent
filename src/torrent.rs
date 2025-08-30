@@ -11,6 +11,7 @@ pub struct Torrent {
     pub total_size: u64,
 }
 
+#[derive(Clone, Copy)]
 pub struct Block {
     pub piece_index: u32,
     pub byte_offset: u32,
@@ -27,8 +28,6 @@ impl Block {
             requested_length: DEFAULT_BLOCK_LENGTH,
         }
     }
-
-    // pub fn 
 }
 
 impl Torrent {

@@ -1,5 +1,5 @@
 use crate::{
-    peer::{MessageType, Peer},
+    peer::{KEEP_ALIVE_MAX_DURATION, MessageType, Peer},
     server::Server,
     torrent::Block,
 };
@@ -89,11 +89,13 @@ impl SharedPeerPool {
             println!("put peer into backlog");
             return;
         }
-        self.pool
-            .lock()
-            .unwrap()
-            .active_threads
-            .push(handle_peer(p));
+        let pt = handle_peer(p);
+        for block in &self.pool.lock().unwrap().desired {
+            pt.send_to_thread
+                .send(PeerThreadMessage::RequestBlock(*block))
+                .unwrap();
+        }
+        self.pool.lock().unwrap().active_threads.push(pt);
         println!("submitted peer");
     }
 
@@ -103,6 +105,12 @@ impl SharedPeerPool {
 
     pub fn submit_desired_block(self: &mut Self, block: Block) {
         self.pool.lock().unwrap().desired.push(block);
+        let p = self.pool.lock().unwrap();
+        for at in &p.active_threads {
+            at.send_to_thread
+                .send(PeerThreadMessage::RequestBlock(block))
+                .unwrap();
+        }
     }
 
     // Starts a thread that joins finished threads and peers and runs maintenance
@@ -160,7 +168,15 @@ fn handle_peer(mut peer: Peer) -> PeerThread {
         }
 
         loop {
-            let has_data = peer.has_data().unwrap();
+            let has_data = match peer.has_data() {
+                Ok(b) => b,
+                Err(e) => {
+                    if e.kind() != io::ErrorKind::WouldBlock {
+                        println!("error checking has_data {:?}", e);
+                    }
+                    false
+                }
+            };
             if has_data {
                 match peer.receive_message() {
                     Ok(msg) => {
@@ -184,7 +200,6 @@ fn handle_peer(mut peer: Peer) -> PeerThread {
                                         "peer sent incorrect have message length {}",
                                         msg.payload.len()
                                     );
-                                    peer.disconnect().expect("failed to disconnect");
                                     return;
                                 }
                                 let have_idx = u32::from_be_bytes(msg.payload.try_into().unwrap());
@@ -231,19 +246,22 @@ fn handle_peer(mut peer: Peer) -> PeerThread {
                         peer.last_message_at = Some(time::Instant::now());
                     }
                     Err(err) => {
-                        peer.disconnect().expect("failed to disconnect");
                         println!("failed to receive message {}", err);
                         return;
                     }
                 }
             }
 
-            // TODO: each second check KEEP_ALIVE_MAX_DURATION and try_iter
             for msg in recv.try_iter() {
                 match msg {
                     PeerThreadMessage::RequestBlock(block) => {
                         if !peer.has_piece(block.piece_index) {
                             continue;
+                        }
+                        if !peer.am_interested {
+                            peer.send_message(MessageType::Interested, None)
+                                .expect("failed to send interested message");
+                            peer.am_interested = true;
                         }
                         let mut payload: Vec<u8> = Vec::new();
                         payload.extend(block.piece_index.to_be_bytes());
@@ -263,6 +281,13 @@ fn handle_peer(mut peer: Peer) -> PeerThread {
                         println!("sent cancel")
                     }
                     _ => {}
+                }
+            }
+
+            if let Some(t) = peer.last_message_at {
+                if t.elapsed() >= KEEP_ALIVE_MAX_DURATION {
+                    println!("peer exceeded max keep alive duration");
+                    return;
                 }
             }
         }

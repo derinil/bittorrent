@@ -1,4 +1,5 @@
-/target
+target/
 *.torrent
 *.txt
 .DS_Store
+download/

@@ -241,6 +241,14 @@ impl Peer {
     }
 }
 
+impl Drop for Peer {
+    fn drop(&mut self) {
+        if let Err(e) = self.disconnect() {
+            println!("failed to disconnect peer when dropped {:?}", e);
+        }
+    }
+}
+
 fn parse_bitfield(bitfield: &Vec<u8>) -> Vec<usize> {
     let mut pieces = Vec::new();
 

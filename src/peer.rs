@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 use std::io;
 use std::io::Read;
@@ -9,7 +10,7 @@ use std::thread;
 use std::time;
 
 use crate::PEER_ID;
-use crate::torrent;
+use crate::util::easy_err;
 
 const BITTORRENT_PROTOCOL: &str = "BitTorrent protocol";
 
@@ -55,17 +56,16 @@ pub struct Peer {
     pub port: u16,
     conn: Option<TcpStream>,
     addr: SocketAddr,
-    am_choked: bool,
-    am_interested: bool,
-    peer_choked: bool,
-    peer_interested: bool,
+    pub am_choked: bool,
+    pub am_interested: bool,
+    pub peer_choked: bool,
+    pub peer_interested: bool,
 
     pub peer_id: Option<[u8; 20]>,
     alive_keeper_thread: Option<thread::Thread>,
 
     // List of piece indexes
-    pub peer_has: Vec<usize>,
-    we_have: Vec<usize>,
+    pub peer_has: HashSet<u32>,
 
     last_message_at: Option<time::Instant>,
 }
@@ -84,8 +84,7 @@ impl Peer {
             peer_interested: false,
             peer_id: None,
             alive_keeper_thread: None,
-            peer_has: Vec::new(),
-            we_have: Vec::new(),
+            peer_has: HashSet::new(),
             last_message_at: None,
         }
     }
@@ -182,20 +181,23 @@ impl Peer {
         Ok(())
     }
 
-    pub fn receive_message(self: &Self) -> Result<Option<Message>, io::Error> {
+    pub fn receive_message(self: &Self) -> Result<Message, io::Error> {
         if let None = self.conn {
-            return Ok(None);
+            return Err(easy_err("not connected"));
         }
+
+        // TODO:
+        // self.conn.as_ref().unwrap().peek(buf)
 
         let mut buf = [0; 4];
         self.conn.as_ref().unwrap().read_exact(&mut buf)?;
 
         let data_len = u32::from_be_bytes(buf.try_into().unwrap()) as usize;
         if data_len == 0 {
-            return Ok(Some(Message {
+            return Ok(Message {
                 message_type: MessageType::KeepAlive,
                 payload: Vec::new(),
-            }));
+            });
         }
 
         let mut data = vec![0; data_len];
@@ -203,13 +205,13 @@ impl Peer {
 
         let mt = MessageType::from_u8(data.remove(0));
         if let None = mt {
-            return Ok(None);
+            return Err(easy_err("unknown message type"));
         }
 
-        Ok(Some(Message {
+        Ok(Message {
             message_type: mt.unwrap(),
             payload: data,
-        }))
+        })
     }
 
     pub fn get_peer_id(self: &Self) -> Result<Option<String>, std::string::FromUtf8Error> {
@@ -226,7 +228,10 @@ impl Peer {
 
     // this will overwrite peer's has list
     pub fn parse_bitfield(self: &mut Self, bitfield: &Vec<u8>) {
-        self.peer_has = parse_bitfield(bitfield);
+        let v = parse_bitfield(bitfield);
+        v.iter().for_each(|t| {
+            self.peer_has.insert(*t as u32);
+        });
     }
 }
 

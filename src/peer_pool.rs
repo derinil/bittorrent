@@ -21,7 +21,7 @@ struct PeerPool {
     // these are unconnected peers
     backlog_peers: Vec<Peer>,
     info_hash: [u8; 20],
-    active_threads: Vec<JoinHandle<peer::Peer>>,
+    active_threads: Vec<JoinHandle<Option<peer::Peer>>>,
     receiving: Vec<Block>,
     desired: Vec<Block>,
     received: Vec<Block>,
@@ -66,18 +66,16 @@ impl SharedPeerPool {
         }
         match p.receive_message() {
             Ok(m) => 'msgMatch: {
-                if let None = m {
-                    break 'msgMatch;
-                }
-                if !matches!(m.as_ref().unwrap().message_type, MessageType::Bitfield) {
+                if !matches!(m.message_type, MessageType::Bitfield) {
                     if let Err(e) = p.disconnect() {
                         println!(
                             "failed to disconnect client bc of unexpected message {:?}",
                             e
                         );
+                        break 'msgMatch;
                     }
                 }
-                p.parse_bitfield(&m.as_ref().unwrap().payload);
+                p.parse_bitfield(&m.payload);
                 println!("peer gotbitfield {:?} {}", p.peer_has, p.peer_has.len());
                 return;
             }
@@ -125,13 +123,63 @@ impl SharedPeerPool {
         let mut p = self.pool.lock().unwrap();
 
         for _ in 0..p.peers.len() {
-            let peer = p.peers.remove(0);
-            let t = thread::spawn(|| -> peer::Peer {
+            let mut peer = p.peers.remove(0);
+
+            let t = thread::spawn(|| -> Option<peer::Peer> {
                 if let Some(s) = peer.get_peer_id().unwrap() {
                     println!("handling peer {:?}", s);
                 }
-                peer
+                match peer.receive_message() {
+                    Ok(msg) => match msg.message_type {
+                        MessageType::KeepAlive => {}
+                        MessageType::Choke => {
+                            peer.am_choked = true;
+                        }
+                        MessageType::Unchoke => {
+                            peer.am_choked = false;
+                        }
+                        MessageType::Interested => {
+                            peer.peer_interested = true;
+                        }
+                        MessageType::NotInterested => {
+                            peer.peer_interested = false;
+                        }
+                        MessageType::Have => {
+                            if msg.payload.len() != 4 {
+                                println!("peer sent incorrect have message length {}", msg.payload.len());
+                                peer.disconnect().expect("failed to disconnect");
+                                return None;
+                            }
+                            let have_idx = u32::from_be_bytes(msg.payload.try_into().unwrap());
+                            peer.peer_has.insert(have_idx);
+                        }
+                        MessageType::Bitfield => {
+                            println!("peer sent unexpected bitfield message");
+                            peer.disconnect().expect("failed to disconnect");
+                            return None;
+                        }
+                        MessageType::Request => {
+                            // TODO:
+                        }
+                        MessageType::Piece => {
+                            // TODO:
+                        }
+                        MessageType::Cancel => {
+                            // TODO:
+                        }
+                        MessageType::Port => {
+                            // TODO: dht
+                        }
+                    },
+                    Err(err) => {
+                        peer.disconnect().expect("failed to disconnect");
+                        println!("failed to receive message {}", err);
+                        return None;
+                    }
+                }
+                Some(peer)
             });
+
             p.active_threads.push(t);
         }
 
@@ -139,7 +187,9 @@ impl SharedPeerPool {
         for _ in 0..p.active_threads.len() {
             let t = p.active_threads.remove(0);
             if t.is_finished() {
-                p.peers.push(t.join().unwrap());
+                if let Some(peer) = t.join().unwrap() {
+                    p.peers.push(peer);
+                }
             } else {
                 new_active_threads.push(t);
             }

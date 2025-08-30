@@ -106,7 +106,7 @@ fn handle_download(
         pp.submit_desired_block(Block::new(piece_idx, block_start));
     }
 
-    println!("download done");
+    println!("pool setup ready");
 
     Ok(())
 }

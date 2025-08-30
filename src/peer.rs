@@ -76,9 +76,9 @@ impl Peer {
             conn: None,
             addr: ip_to_socket_addr(ip_address, port),
             // https://wiki.theory.org/BitTorrentSpecification#Overview
-            am_choked: true,
+            am_choked: false,
             am_interested: false,
-            peer_choked: true,
+            peer_choked: false,
             peer_interested: false,
             peer_id: None,
             peer_has: HashSet::new(),
@@ -313,7 +313,6 @@ trait Packet {
 
 // https://wiki.theory.org/BitTorrentSpecification#Handshake
 pub struct HandshakePacket {
-    lenprot: u8,
     prot: [u8; 19],
     info_hash: [u8; 20],
     peer_id: [u8; 20],
@@ -322,7 +321,6 @@ pub struct HandshakePacket {
 impl HandshakePacket {
     fn new(info_hash: [u8; 20]) -> Self {
         Self {
-            lenprot: 19,
             prot: BITTORRENT_PROTOCOL.as_bytes().try_into().unwrap(),
             info_hash: info_hash,
             peer_id: *PEER_ID.get().unwrap(),
@@ -354,7 +352,6 @@ impl Packet for HandshakePacket {
         }
 
         Some(Box::new(Self {
-            lenprot: 19,
             prot: BITTORRENT_PROTOCOL.as_bytes().try_into().unwrap(),
             info_hash: buf.get(28..48).unwrap().try_into().unwrap(),
             peer_id: buf.get(48..68).unwrap().try_into().unwrap(),

@@ -5,20 +5,12 @@ use crate::{
 };
 use std::{
     fs, io,
-    sync::{
-        self, Arc, Mutex,
-        mpsc::{self, Receiver, Sender},
-    },
+    sync::mpsc::{self, Receiver, Sender},
     thread::{self, JoinHandle},
     time,
 };
 
-#[derive(Clone)]
-pub struct SharedPeerPool {
-    pool: Arc<Mutex<PeerPool>>,
-}
-
-struct PeerPool {
+pub struct PeerPool {
     peers: Vec<Peer>,
     server: Server,
     // these are unconnected peers
@@ -33,8 +25,8 @@ struct PeerPool {
 
 struct PeerThread {
     thread: JoinHandle<()>,
-    send_to_thread: sync::mpsc::Sender<PeerThreadMessage>,
-    read_from_thread: sync::mpsc::Receiver<PeerThreadMessage>,
+    send_to_thread: mpsc::Sender<PeerThreadMessage>,
+    read_from_thread: mpsc::Receiver<PeerThreadMessage>,
 }
 
 enum PeerThreadMessage {
@@ -44,20 +36,18 @@ enum PeerThreadMessage {
 
 const MAX_CONNECTIONS: usize = 64;
 
-impl SharedPeerPool {
-    pub fn new(info_hash: [u8; 20]) -> Result<SharedPeerPool, io::Error> {
-        Ok(SharedPeerPool {
-            pool: Arc::new(Mutex::new(PeerPool {
-                peers: Vec::new(),
-                server: Server::start()?,
-                backlog_peers: Vec::new(),
-                info_hash: info_hash,
-                active_threads: Vec::new(),
-                receiving: Vec::new(),
-                desired: Vec::new(),
-                received: Vec::new(),
-                cleanup_thread: None,
-            })),
+impl PeerPool {
+    pub fn new(info_hash: [u8; 20]) -> Result<PeerPool, io::Error> {
+        Ok(PeerPool {
+            peers: Vec::new(),
+            server: Server::start()?,
+            backlog_peers: Vec::new(),
+            info_hash: info_hash,
+            active_threads: Vec::new(),
+            receiving: Vec::new(),
+            desired: Vec::new(),
+            received: Vec::new(),
+            cleanup_thread: None,
         })
     }
 
@@ -70,7 +60,7 @@ impl SharedPeerPool {
                 return;
             }
         }
-        match p.handshake(self.pool.lock().unwrap().info_hash) {
+        match p.handshake(self.info_hash) {
             Ok(_) => {}
             Err(e) => {
                 println!("failed to handshake {:?}", e);
@@ -84,54 +74,32 @@ impl SharedPeerPool {
             if let Err(e) = p.disconnect() {
                 println!("failed to disconnect client bc of max connections {:?}", e);
             }
-            self.pool.lock().unwrap().backlog_peers.push(p);
+            self.backlog_peers.push(p);
             println!("put peer into backlog");
             return;
         }
-        self.pool.lock().unwrap().active_threads.push(handle_peer(p));
+        self.active_threads.push(handle_peer(p));
         println!("started peer thread");
     }
 
     pub fn count_connected(self: &Self) -> usize {
-        self.pool.lock().unwrap().peers.iter().count()
+        self.peers.iter().count()
     }
 
     pub fn submit_desired_block(self: &mut Self, block: Block) {
-        self.pool.lock().unwrap().desired.push(block);
+        self.desired.push(block);
     }
 
     // Starts a thread that joins finished threads and peers and runs maintenance
-    pub fn start(self: &mut Self) {
-        let s = self.clone();
-        self.pool.lock().unwrap().cleanup_thread = Some(thread::spawn(move || {
-            loop {
-                let f = || {
-                    let mut p = s.pool.lock().unwrap();
-                    let mut new_threads = Vec::new();
-                    for _ in 0..p.active_threads.len() {
-                        let at = p.active_threads.remove(0);
-                        if at.thread.is_finished() {
-                            match at.thread.join() {
-                                Ok(_) => {}
-                                Err(err) => {
-                                    println!("failed to join peer thread {:?}", err);
-                                }
-                            }
-                        } else {
-                            new_threads.push(at);
-                        }
-                    }
-                    p.active_threads = new_threads;
-                    println!("active connections {}", p.active_threads.len());
-                };
-                f();
-                thread::sleep(time::Duration::from_secs(3));
-            }
-        }));
+    pub fn handle(self: &mut Self) {
+        loop {
+            // Find a willing peer to request a block
+            println!("active connections {}", self.active_threads.len());
+        }
     }
 
     pub fn cleanup(self: &mut Self) {
-        if let Some(t) = self.pool.lock().unwrap().cleanup_thread.take() {
+        if let Some(t) = self.cleanup_thread.take() {
             match t.join() {
                 Ok(_) => {}
                 Err(err) => {

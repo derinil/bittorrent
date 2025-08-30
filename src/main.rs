@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 use std::time;
 use std::{env, process};
 
+use crate::peer_pool::PeerPool;
 use crate::torrent::{Block, DEFAULT_BLOCK_LENGTH, Torrent};
 
 mod bencoding;
@@ -44,8 +45,7 @@ fn main() {
     let torr = torrent::Torrent::parse(file_content).expect("failed to parse torrent");
 
     let mut pool =
-        peer_pool::SharedPeerPool::new(torr.info_hash).expect("failed to create shared peer pool");
-    pool.start();
+        peer_pool::PeerPool::new(torr.info_hash).expect("failed to create shared peer pool");
 
     'announceLoop: for announcer in torr.announce_urls.split_at(2).1 {
         if announcer.starts_with("udp://") {
@@ -64,7 +64,7 @@ fn main() {
         }
     }
 
-    pool.cleanup();
+    pool.handle();
 }
 
 fn handle_udp_tracker(u: &str) -> Option<udp::Tracker> {
@@ -82,7 +82,7 @@ fn handle_udp_tracker(u: &str) -> Option<udp::Tracker> {
 }
 
 fn handle_download(
-    pp: &mut peer_pool::SharedPeerPool,
+    pp: &mut PeerPool,
     tr: &mut udp::Tracker,
     torr: Torrent,
 ) -> Result<(), std::io::Error> {

@@ -63,8 +63,9 @@ pub struct Peer {
     pub peer_id: Option<[u8; 20]>,
     alive_keeper_thread: Option<thread::Thread>,
 
-    peer_has: Vec<torrent::Block>,
-    we_have: Vec<torrent::Block>,
+    // List of piece indexes
+    pub peer_has: Vec<usize>,
+    we_have: Vec<usize>,
 
     last_message_at: Option<time::Instant>,
 }
@@ -217,6 +218,45 @@ impl Peer {
         }
 
         Ok(Some(String::from_utf8(self.peer_id.unwrap().to_vec())?))
+    }
+
+    pub fn has_piece(self: &Self) -> bool {
+        false
+    }
+
+    // this will overwrite peer's has list
+    pub fn parse_bitfield(self: &mut Self, bitfield: &Vec<u8>) {
+        self.peer_has = parse_bitfield(bitfield);
+    }
+}
+
+fn parse_bitfield(bitfield: &Vec<u8>) -> Vec<usize> {
+    let mut pieces = Vec::new();
+
+    for (byte_idx, byte) in bitfield.iter().enumerate() {
+        for idx in 0..8 {
+            if byte & (0b10000000 >> (idx % 8)) != 0 {
+                pieces.push(idx + (byte_idx * 8));
+            }
+        }
+    }
+
+    pieces
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_bitfield() {
+        let mut v = Vec::new();
+        v.push(0b11110000);
+        v.push(0b11111111);
+        v.push(0b00000000);
+        v.push(0b00000001);
+        let b = parse_bitfield(&v);
+        println!("{:?} {}", b, b.len());
     }
 }
 

@@ -69,7 +69,7 @@ impl SharedPeerPool {
                 if let None = m {
                     break 'msgMatch;
                 }
-                if !matches!(m.unwrap().message_type, MessageType::Bitfield) {
+                if !matches!(m.as_ref().unwrap().message_type, MessageType::Bitfield) {
                     if let Err(e) = p.disconnect() {
                         println!(
                             "failed to disconnect client bc of unexpected message {:?}",
@@ -77,8 +77,8 @@ impl SharedPeerPool {
                         );
                     }
                 }
-                println!("got bitfield");
-                // TODO: actually parse the bitfield
+                p.parse_bitfield(&m.as_ref().unwrap().payload);
+                println!("peer gotbitfield {:?} {}", p.peer_has, p.peer_has.len());
                 return;
             }
             Err(e) => {

@@ -128,12 +128,12 @@ impl Peer {
 
         self.conn.as_ref().unwrap().write(&packet)?;
 
-        let mut buf = [0; 512];
-        let nread = self.conn.as_ref().unwrap().read(&mut buf)?;
+        let mut buf = [0; 68];
+        self.conn.as_ref().unwrap().read_exact(&mut buf)?;
 
-        println!("read {nread} bytes");
+        println!("parsing handshake packet");
 
-        match HandshakePacket::parse(&buf[0..nread]) {
+        match HandshakePacket::parse(&buf) {
             Some(p) => {
                 println!("got peer id {}", str::from_utf8(&p.peer_id).unwrap());
                 self.peer_id = Some(p.peer_id);

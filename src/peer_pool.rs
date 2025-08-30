@@ -128,7 +128,7 @@ impl PeerPool {
 
             // Download
             // TODO: this is wasteful, loop through active threads and find apprpriate blocks for them instead
-            for block in &self.desired {
+            'blockLoop: for block in &self.desired {
                 for at in &self.active_threads {
                     if !at.can_respond {
                         continue;
@@ -139,7 +139,7 @@ impl PeerPool {
                     {
                         println!("failed to send thread msg {:?}", e);
                     } else {
-                        continue;
+                        continue 'blockLoop;
                     }
                 }
             }
@@ -155,6 +155,7 @@ impl PeerPool {
                 }
                 match msg_err.unwrap() {
                     PeerThreadMessage::FoundViablePeer(block) => {
+                        println!("got viable peer message");
                         if let Err(e) = at
                             .send_to_thread
                             .send(PeerThreadMessage::RequestBlock(block))
@@ -195,8 +196,9 @@ fn handle_peer(mut peer: Peer) -> PeerThread {
                         sender
                             .send(PeerThreadMessage::FoundViablePeer(block))
                             .unwrap();
+                    } else {
+                        sender.send(PeerThreadMessage::Ignore).unwrap();
                     }
-                    sender.send(PeerThreadMessage::Ignore).unwrap();
                 }
                 PeerThreadMessage::RequestBlock(block) => {
                     if !p.has_piece(block.piece_index) {

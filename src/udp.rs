@@ -98,6 +98,8 @@ impl Tracker {
             ));
         }
 
+        // TODO: interval
+
         println!("got {interval} seconds, {leechers} leechers, {seeders} seeders");
 
         let mut seeders = Vec::new();

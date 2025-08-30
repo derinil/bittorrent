@@ -4,7 +4,7 @@ use crate::{
     torrent::Block,
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs, io,
     sync::mpsc::{self, Receiver, Sender},
     thread::{self, JoinHandle},
@@ -39,6 +39,8 @@ enum PeerThreadMessage {
     FoundViablePeer(Block),
     RequestBlock(Block),
     DownloadedBlock(Block),
+    GetPieces,
+    HasPieces(HashSet<u32>),
 }
 
 const MAX_CONNECTIONS: usize = 64;
@@ -127,56 +129,83 @@ impl PeerPool {
             }
 
             // Download
-            // TODO: this is wasteful, loop through active threads and find apprpriate blocks for them instead
-            'blockLoop: for block in &self.desired {
-                for at in &self.active_threads {
-                    if !at.can_respond {
+            for at in &self.active_threads {
+                if let Err(e) = at.send_to_thread.send(PeerThreadMessage::GetPieces) {
+                    println!("failed to send thread msg {:?}", e);
+                    continue;
+                }
+                match at.read_from_thread.recv() {
+                    Ok(msg) => match msg {
+                        PeerThreadMessage::HasPieces(pieces) => {
+                            for block in &self.desired {
+                                if !pieces.contains(&block.piece_index) {
+                                    continue;
+                                }
+                                if let Err(e) = at
+                                    .send_to_thread
+                                    .send(PeerThreadMessage::SearchViablePeer(*block))
+                                {
+                                    println!("failed to send request block msg {:?}", e);
+                                }
+                                match at.read_from_thread.recv() {
+                                    Ok(msg) => {
+                                        match msg {
+                                            PeerThreadMessage::FoundViablePeer(b) => {
+                                                
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("failed to send request block msg {:?}", e);
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    },
+                    Err(e) => {
+                        println!("failed to read thread msg {:?}", e);
                         continue;
-                    }
-                    if let Err(e) = at
-                        .send_to_thread
-                        .send(PeerThreadMessage::SearchViablePeer(*block))
-                    {
-                        println!("failed to send thread msg {:?}", e);
-                    } else {
-                        continue 'blockLoop;
                     }
                 }
             }
 
-            for at in &mut self.active_threads {
-                if !at.can_respond {
-                    continue;
-                }
-                let msg_err = at.read_from_thread.recv();
-                if let Err(e) = msg_err {
-                    println!("failed to read thread msg {:?}", e);
-                    continue;
-                }
-                match msg_err.unwrap() {
-                    PeerThreadMessage::FoundViablePeer(block) => {
-                        println!("got viable peer message");
-                        if let Err(e) = at
-                            .send_to_thread
-                            .send(PeerThreadMessage::RequestBlock(block))
-                        {
-                            println!("failed to send thread msg {:?}", e);
-                        }
-                        self.desired.remove(&block);
-                        at.can_respond = false;
-                        continue;
-                    }
-                    PeerThreadMessage::CanRespond => {
-                        // this will lag by one loop but this is fine
-                        // as it will be marked as not responsibve while searching for peers
-                        at.can_respond = true;
-                    }
-                    PeerThreadMessage::Busy => {
-                        at.can_respond = false;
-                    }
-                    _ => {}
-                }
-            }
+            // println!("waiting for viable peers");
+            // for at in &mut self.active_threads {
+            //     if !at.can_respond {
+            //         continue;
+            //     }
+            //     let msg_err = at.read_from_thread.recv();
+            //     if let Err(e) = msg_err {
+            //         println!("failed to read thread msg {:?}", e);
+            //         continue;
+            //     }
+            //     match msg_err.unwrap() {
+            //         PeerThreadMessage::FoundViablePeer(block) => {
+            //             println!("got viable peer message");
+            //             if let Err(e) = at
+            //                 .send_to_thread
+            //                 .send(PeerThreadMessage::RequestBlock(block))
+            //             {
+            //                 println!("failed to send thread msg {:?}", e);
+            //             }
+            //             self.desired.remove(&block);
+            //             at.can_respond = false;
+            //             continue;
+            //         }
+            //         PeerThreadMessage::CanRespond => {
+            //             // this will lag by one loop but this is fine
+            //             // as it will be marked as not responsibve while searching for peers
+            //             at.can_respond = true;
+            //         }
+            //         PeerThreadMessage::Busy => {
+            //             at.can_respond = false;
+            //         }
+            //         _ => {}
+            //     }
+            // }
 
             // TODO: Upload
         }
@@ -192,11 +221,14 @@ fn handle_peer(mut peer: Peer) -> PeerThread {
             match recv.recv().unwrap() {
                 PeerThreadMessage::SearchViablePeer(block) => {
                     if !p.am_choked && p.has_piece(block.piece_index) {
+                        println!("found viable peer");
                         p.set_interested(true).unwrap();
                         sender
                             .send(PeerThreadMessage::FoundViablePeer(block))
                             .unwrap();
+                        println!("sent viable peer");
                     } else {
+                        println!("found ignore peer");
                         sender.send(PeerThreadMessage::Ignore).unwrap();
                     }
                 }
@@ -226,6 +258,11 @@ fn handle_peer(mut peer: Peer) -> PeerThread {
                 //         .expect("failed to send cancel message");
                 //     println!("sent cancel")
                 // }
+                PeerThreadMessage::GetPieces => {
+                    sender
+                        .send(PeerThreadMessage::HasPieces(p.peer_has.clone()))
+                        .unwrap();
+                }
                 _ => {}
             }
         };

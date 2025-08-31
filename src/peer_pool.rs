@@ -1,45 +1,47 @@
 use crate::{
     peer::{KEEP_ALIVE_MAX_DURATION, MessageType, Peer},
     server::Server,
-    torrent::{Block, DownloadBlock},
+    torrent::{self, Block, DownloadBlock, Torrent},
     util::easy_err,
 };
 use std::{
     cmp::min,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs, io,
     thread::{self, JoinHandle},
     time,
 };
 
 pub struct PeerPool {
+    torrent: Torrent,
+    have_pieces: HashSet<u32>,
+    pieces_in_progress: HashSet<u32>,
+
     server: Server,
-    // these are unconnected peers
-    backlog_peers: Vec<Peer>,
-    info_hash: [u8; 20],
-    desired: HashSet<Block>,
 
     active_peers: Vec<Peer>,
     thread_peers: Vec<DownloadThread>,
+    backlog_peers: Vec<Peer>, // these are unconnected peers
 
     last_choke_update: time::Instant,
 }
 
 struct DownloadThread {
-    block: Block,
+    piece: u32,
     thread: JoinHandle<(Peer, bool)>,
 }
 
 const MAX_CONNECTIONS: usize = 64;
 
 impl PeerPool {
-    pub fn new(info_hash: [u8; 20]) -> Result<PeerPool, io::Error> {
+    pub fn new(torrent: Torrent) -> Result<PeerPool, io::Error> {
         Ok(PeerPool {
+            torrent: torrent,
+            have_pieces: HashSet::new(),
+            pieces_in_progress: HashSet::new(),
             server: Server::start()?,
             backlog_peers: Vec::new(),
-            info_hash: info_hash,
             active_peers: Vec::new(),
-            desired: HashSet::new(),
             thread_peers: Vec::new(),
             last_choke_update: time::Instant::now(),
         })
@@ -50,7 +52,7 @@ impl PeerPool {
 
         for _ in 0..peers.len() {
             let mut peer = peers.remove(0);
-            let info_hash = self.info_hash.clone();
+            let info_hash = self.torrent.info_hash.clone();
             let t = thread::spawn(move || -> (Peer, bool) {
                 match peer.connect() {
                     Ok(_) => {}
@@ -91,10 +93,6 @@ impl PeerPool {
         }
     }
 
-    pub fn submit_desired_block(self: &mut Self, block: Block) {
-        self.desired.insert(block);
-    }
-
     pub fn handle(self: &mut Self) {
         loop {
             // TODO: accept connections
@@ -103,21 +101,23 @@ impl PeerPool {
             // Only do this while downloading, no need to actively seek
             // peers after download is finished.
             // TODO: up to 5 times, one successfull connection resets count.
-            if self.desired.len() > 0 {
+            if self.count_pieces_left() > 0 {
                 self.attempt_backlog_connections();
             }
 
             // TODO: decide who gets choked every 10 seconds
 
-            self.receive_messages();
-            self.download();
+            self.consume_messages();
+            if self.count_pieces_left() > 0 {
+                self.download(); // TODO: add another step to actually write pieces to filesystem
+            }
             // TODO: send have messages
-            self.upload();
+            self.upload(); // TODO: this will send pieces
             self.check_keep_alive();
         }
     }
 
-    fn receive_messages(self: &mut Self) {
+    fn consume_messages(self: &mut Self) {
         let mut ts: Vec<JoinHandle<(Peer, bool)>> = Vec::new();
         for _ in 0..self.active_peers.len() {
             let mut peer = self.active_peers.swap_remove(0);
@@ -162,102 +162,92 @@ impl PeerPool {
     }
 
     fn download(self: &mut Self) {
-        let mut untouched_peers = Vec::new();
-        for _ in 0..self.active_peers.len() {
-            let mut ap = self.active_peers.swap_remove(0);
+        // TODO: join download threads and consolidate all pieces downloaded
 
-            if !ap.can_download() {
-                untouched_peers.push(ap);
-                continue;
-            }
+        let pieces_left = self.get_pieces_left();
 
-            let req_block = 'reqBlockBlock: {
-                for block in &self.desired {
-                    if !ap.has_piece(block.piece_index) {
-                        continue;
-                    }
-                    break 'reqBlockBlock Some(block);
-                }
-                break 'reqBlockBlock None;
-            };
-
-            if let None = req_block {
-                if let Err(e) = ap.set_interested(false) {
-                    println!("failed to set uninterested {:?}", e);
-                } else {
-                    untouched_peers.push(ap);
-                }
-                continue;
-            }
-
-            let block = *req_block.unwrap();
-
-            let t = thread::spawn(move || -> (Peer, bool) {
-                println!("fetching block {} {}", block.piece_index, block.byte_offset);
-                if let Err(e) = ap.set_interested(true) {
-                    println!("failed to set interested {:?}", e);
-                    return (ap, false);
+        let mut downloadable_peers: Vec<Peer> = self
+            .active_peers
+            .extract_if(.., |p| -> bool {
+                if !p.can_download() {
+                    return false;
                 }
 
-                match ap.has_data() {
-                    Ok(has_data) => 'apMatch: {
-                        if !has_data {
-                            break 'apMatch;
-                        }
-                        if let Err(e) = handle_peer(&mut ap) {
-                            println!("failed to handle peer before requesting {:?}", e);
-                            return (ap, false);
-                        }
-                    }
-                    Err(e) => {
-                        println!("failed to check if peer has data before requesting {:?}", e);
-                        return (ap, false);
+                for b in &pieces_left {
+                    if p.has_piece(b.clone()) {
+                        return true;
                     }
                 }
 
-                let mut payload: Vec<u8> = Vec::new();
-                payload.extend(block.piece_index.to_be_bytes());
-                payload.extend(block.byte_offset.to_be_bytes());
-                payload.extend(block.requested_length.to_be_bytes());
+                false
+            })
+            .collect();
 
-                if let Err(e) = ap.send_message(MessageType::Request, Some(&payload)) {
-                    println!("failed to send request message {:?}", e);
-                    return (ap, false);
-                }
-
-                (ap, true)
-            });
-
-            self.thread_peers.push(DownloadThread {
-                block: block,
-                thread: t,
-            });
-            self.desired.remove(&block);
-        }
-
-        self.active_peers = untouched_peers;
-
-        for _ in 0..self.thread_peers.len() {
-            let tp = self.thread_peers.swap_remove(0);
-            if !tp.thread.is_finished() {
-                self.thread_peers.push(tp);
-                continue;
+        let ts = spawn_peer_threads(&mut self.active_peers, |mut p: Peer| -> Option<Peer> {
+            if let Err(e) = p.set_interested(false) {
+                println!("failed to set uninterested for peer {:?}", e);
+                return None;
             }
-            match tp.thread.join() {
+            Some(p)
+        });
+        for t in ts {
+            match t.join() {
                 Ok(p) => {
-                    if p.1 {
-                        println!(
-                            "downloaded block {} {}",
-                            tp.block.piece_index, tp.block.byte_offset
-                        );
-                        self.active_peers.push(p.0);
-                    } else {
-                        self.backlog_peers.push(p.0);
+                    if let Some(peer) = p {
+                        self.active_peers.push(peer);
                     }
                 }
                 Err(e) => {
                     println!("failed to join thread {:?}", e);
-                    self.desired.insert(tp.block);
+                }
+            }
+        }
+
+        let ts = spawn_peer_threads(&mut downloadable_peers, |mut p: Peer| -> Option<Peer> {
+            if let Err(e) = p.set_interested(true) {
+                println!("failed to set interested for downloadble peer {:?}", e);
+                return None;
+            }
+            Some(p)
+        });
+        for t in ts {
+            match t.join() {
+                Ok(p) => {
+                    if let Some(peer) = p {
+                        downloadable_peers.push(peer);
+                    }
+                }
+                Err(e) => {
+                    println!("failed to join thread {:?}", e);
+                }
+            }
+        }
+
+        let mut assigned_pieces = HashMap::new();
+
+        'peerLoop: for peer in &downloadable_peers {
+            for piece in &pieces_left {
+                assigned_pieces.insert(peer.ip_address, piece.clone());
+                continue 'peerLoop;
+            }
+        }
+
+        let ts = spawn_peer_threads(&mut downloadable_peers, |mut p: Peer| -> Option<Peer> {
+            if let Err(e) = handle_peer(&mut p) {
+                println!("failed to handle peer {:?}", e);
+                return None;
+            }
+            Some(p)
+        });
+        for t in ts {
+            match t.join() {
+                Ok(p) => {
+                    if let Some(peer) = p {
+                        downloadable_peers.push(peer);
+                    }
+                }
+                Err(e) => {
+                    println!("failed to join thread {:?}", e);
                 }
             }
         }
@@ -293,6 +283,25 @@ impl PeerPool {
         println!("connecting to backlog peers {}", backlog.len());
         self.connect_peers(backlog);
         println!("done attempting connections");
+    }
+
+    fn count_pieces_left(&self) -> u32 {
+        self.torrent.piece_len
+            - self.have_pieces.len() as u32
+            - self.pieces_in_progress.len() as u32
+    }
+
+    fn get_pieces_left(&self) -> Vec<u32> {
+        let mut pl = Vec::new();
+
+        for i in 0..self.torrent.piece_len {
+            pl.push(i);
+        }
+
+        let _ = pl.extract_if(.., |i| -> bool { self.have_pieces.contains(i) });
+        let _ = pl.extract_if(.., |i| -> bool { self.pieces_in_progress.contains(i) });
+
+        pl
     }
 }
 
@@ -331,7 +340,7 @@ fn handle_peer(peer: &mut Peer) -> Result<(), io::Error> {
             peer.request_queue.push(Block::parse(&msg.payload).unwrap());
         }
         MessageType::Piece => {
-            peer.downloaded_pieces
+            peer.downloaded_blocks
                 .push(DownloadBlock::parse(&msg.payload).unwrap());
         }
         MessageType::Cancel => {
@@ -353,4 +362,19 @@ fn handle_peer(peer: &mut Peer) -> Result<(), io::Error> {
     }
 
     Ok(())
+}
+
+fn spawn_peer_threads<F, T>(peers: &mut Vec<Peer>, f: F) -> Vec<JoinHandle<T>>
+where
+    F: Fn(Peer) -> T + Copy,
+    F: Send + 'static,
+    T: Send + 'static,
+{
+    let mut ts = Vec::new();
+
+    peers.drain(..).for_each(|p| {
+        ts.push(thread::spawn(move || -> T { f(p) }));
+    });
+
+    ts
 }

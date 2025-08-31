@@ -5,6 +5,7 @@ use std::io;
 
 pub const DEFAULT_BLOCK_LENGTH: u32 = 16384;
 
+#[derive(Clone)]
 pub struct Torrent {
     pub info_hash: [u8; 20],
     pub announce_urls: Vec<String>,

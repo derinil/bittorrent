@@ -66,11 +66,11 @@ pub struct Peer {
     pub peer_id: Option<[u8; 20]>,
 
     pub request_queue: Vec<Block>,
-    pub downloaded_pieces: Vec<DownloadBlock>,
+    pub downloaded_blocks: Vec<DownloadBlock>,
 
     // List of piece indexes
     pub peer_has: HashSet<u32>,
-    pub block_movements: Vec<BlockMovement>,
+    pub block_movements: Vec<BlockMovement>, // TODO: update this based on messages
 
     pub last_message_at: Option<time::Instant>,
 }
@@ -103,7 +103,7 @@ impl Peer {
             last_message_at: None,
             block_movements: Vec::new(),
             request_queue: Vec::new(),
-            downloaded_pieces: Vec::new(),
+            downloaded_blocks: Vec::new(),
         }
     }
 

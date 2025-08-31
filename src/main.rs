@@ -5,7 +5,7 @@ use std::time;
 use std::{env, process};
 
 use crate::peer_pool::PeerPool;
-use crate::torrent::{Block, DEFAULT_BLOCK_LENGTH, Torrent};
+use crate::torrent::Torrent;
 
 mod bencoding;
 mod peer;
@@ -45,7 +45,7 @@ fn main() {
     let torr = torrent::Torrent::parse(file_content).expect("failed to parse torrent");
 
     let mut pool =
-        peer_pool::PeerPool::new(torr.info_hash).expect("failed to create shared peer pool");
+        peer_pool::PeerPool::new(torr.clone()).expect("failed to create shared peer pool");
 
     'announceLoop: for announcer in torr.announce_urls.split_at(2).1 {
         if announcer.starts_with("udp://") {
@@ -94,15 +94,6 @@ fn handle_download(
     }
 
     pp.connect_peers(seeders);
-
-    for piece_idx in 0..torr.piece_len - 1 {
-        let mut block_start = 0;
-        while block_start + DEFAULT_BLOCK_LENGTH < torr.piece_len {
-            pp.submit_desired_block(Block::new(piece_idx, block_start));
-            block_start += DEFAULT_BLOCK_LENGTH;
-        }
-        pp.submit_desired_block(Block::new(piece_idx, block_start));
-    }
 
     println!("pool setup ready");
 

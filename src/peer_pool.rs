@@ -168,16 +168,9 @@ impl PeerPool {
                         println!("fetching block {} {}", block.piece_index, block.byte_offset);
                         ap.set_interested(true)?;
 
-                        match ap.has_data() {
-                            Ok(has_data) => {
-                                if has_data {
-                                    handle_peer(&mut ap)?;
-                                }
-                            }
-                            Err(e) => {
-                                println!("failed to check if peer has data {:?}", e);
-                            }
-                        }
+                        if ap.has_data()? {
+                            handle_peer(&mut ap)?;
+                        } 
 
                         let mut payload: Vec<u8> = Vec::new();
                         payload.extend(block.piece_index.to_be_bytes());

@@ -1,1 +1,12 @@
-dipstorrent
+bittorrent client
+
+supported beps:
+- udp trackers https://bittorrent.org/beps/bep_0015.html
+no ipv6
+- multitrackers https://www.bittorrent.org/beps/bep_0012.html
+tiers are not respected
+
+todo:
+- keep track of what block was downloaded from which client at what time
+then use this to choke clients based on download rate
+- server accept connections

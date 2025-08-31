@@ -9,6 +9,7 @@ use std::net::TcpStream;
 use std::time;
 
 use crate::PEER_ID;
+use crate::torrent::Block;
 use crate::util::easy_err;
 
 const BITTORRENT_PROTOCOL: &str = "BitTorrent protocol";
@@ -65,8 +66,20 @@ pub struct Peer {
 
     // List of piece indexes
     pub peer_has: HashSet<u32>,
+    pub block_movements: Vec<BlockMovement>,
 
     pub last_message_at: Option<time::Instant>,
+}
+
+enum BlockDirection {
+    UploadedToPeer,
+    DownloadedFromPeer,
+}
+
+struct BlockMovement {
+    block: Block,
+    when: time::Instant,
+    direction: BlockDirection,
 }
 
 impl Peer {
@@ -84,6 +97,7 @@ impl Peer {
             peer_id: None,
             peer_has: HashSet::new(),
             last_message_at: None,
+            block_movements: Vec::new(),
         }
     }
 

@@ -1,4 +1,5 @@
-use std::{io::Error, net::UdpSocket, thread::sleep, time::Duration};
+use std::io;
+use std::{net::UdpSocket, time::Duration};
 
 use crate::peer;
 
@@ -19,7 +20,7 @@ struct Packet<const PACKET_SIZE: usize> {
 }
 
 impl Tracker {
-    pub fn new() -> Result<Self, std::io::Error> {
+    pub fn new() -> Result<Self, io::Error> {
         Ok(Tracker {
             connection_id: None,
             socket: UdpSocket::bind("0.0.0.0:0")?,
@@ -29,7 +30,7 @@ impl Tracker {
         })
     }
 
-    pub fn initiate(self: &mut Self, announce_url: &str) -> Result<(), std::io::Error> {
+    pub fn initiate(self: &mut Self, announce_url: &str) -> Result<(), io::Error> {
         self.socket.connect(announce_url)?;
 
         let conn_packet = self.create_connect_packet();
@@ -44,10 +45,7 @@ impl Tracker {
         let tx_id = u32::from_be_bytes(buf[4..8].try_into().unwrap());
 
         if tx_id != conn_packet.tx_id {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "got unexpected tx id",
-            ));
+            return Err(io::Error::new(io::ErrorKind::Other, "got unexpected tx id"));
         }
 
         println!("received connection id {}", connection_id);
@@ -62,7 +60,7 @@ impl Tracker {
         info_hash: [u8; 20],
         peer_id: &[u8; 20],
         event: u32,
-    ) -> Result<Vec<peer::Peer>, std::io::Error> {
+    ) -> Result<Vec<peer::Peer>, io::Error> {
         let packet = self.create_announce_packet(info_hash, peer_id, event);
         self.socket.send(&packet.bytes)?;
 
@@ -75,8 +73,8 @@ impl Tracker {
         let action = u32::from_be_bytes(buf[0..4].try_into().unwrap());
 
         if action == 3 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
                 format!(
                     "got error response {}",
                     str::from_utf8(&buf[8..256]).unwrap()
@@ -92,10 +90,7 @@ impl Tracker {
         let seeders = u32::from_be_bytes(buf[16..20].try_into().unwrap());
 
         if tx_id != packet.tx_id {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "got unexpected tx id",
-            ));
+            return Err(io::Error::new(io::ErrorKind::Other, "got unexpected tx id"));
         }
 
         // TODO: interval
@@ -186,30 +181,4 @@ impl Tracker {
             bytes: buf,
         }
     }
-}
-
-fn attempt_with_backoff<F: Fn() -> Result<(), Error>>(cl: F) -> Result<(), Error> {
-    let mut err: Option<Error> = None;
-
-    for i in 0..3 {
-        match cl() {
-            Ok(v) => {
-                return Ok(v);
-            }
-            Err(e) => {
-                err = Some(e);
-            }
-        }
-        sleep(std::time::Duration::from_secs(backoff(i)));
-    }
-
-    if let Some(err) = err {
-        return Err(err);
-    }
-
-    Ok(())
-}
-
-fn backoff(tries: u32) -> u64 {
-    return 15 * (2 as u64).pow(tries);
 }

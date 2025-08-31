@@ -8,9 +8,9 @@ use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::time;
 
-use crate::torrent::DownloadBlock;
 use crate::PEER_ID;
 use crate::torrent::Block;
+use crate::torrent::DownloadBlock;
 use crate::util::easy_err;
 
 const BITTORRENT_PROTOCOL: &str = "BitTorrent protocol";
@@ -160,6 +160,8 @@ impl Peer {
             }
             None => {}
         }
+
+        self.last_message_at = Some(time::Instant::now());
 
         Ok(())
     }

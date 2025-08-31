@@ -102,14 +102,14 @@ impl PeerPool {
                     ts.push(thread::spawn(|| -> Option<Peer> {
                         'peerLoop: loop {
                             match peer.has_data() {
-                                Ok(has_data) => {
-                                    if !has_data {
+                                Ok(b) => {
+                                    if !b {
                                         break 'peerLoop;
                                     }
                                 }
                                 Err(e) => {
                                     println!("failed to check if peer has data {:?}", e);
-                                    break 'peerLoop;
+                                    return None;
                                 }
                             }
 

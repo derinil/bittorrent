@@ -98,11 +98,13 @@ impl PeerPool {
                 && self.backlog_peers.len()
                     >= MAX_CONNECTIONS - (self.active_peers.len() + self.thread_peers.len())
             {
-                let backlog = self
+                let backlog: Vec<Peer> = self
                     .backlog_peers
                     .drain(0..MAX_CONNECTIONS - (self.active_peers.len() + self.thread_peers.len()))
                     .collect();
+                println!("connecting to backlog peers {}", backlog.len());
                 self.connect_peers(backlog);
+                println!("done attempting connections");
             }
 
             {

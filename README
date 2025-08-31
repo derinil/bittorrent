@@ -7,6 +7,7 @@ no ipv6
 tiers are not respected
 
 todo:
-- keep track of what block was downloaded from which client at what time
-then use this to choke clients based on download rate
+- keep track of what block was downloaded from which client at what time then use this to choke clients based on download rate
+- choking algorithm
 - server accept connections
+- uploading

@@ -101,9 +101,23 @@ impl PeerPool {
             for _ in 0..self.active_peers.len() {
                 let mut peer = self.active_peers.swap_remove(0);
                 ts.push(thread::spawn(|| -> Option<Peer> {
-                    if let Err(e) = handle_peer(&mut peer) {
-                        println!("failed to handle peer {:?}", e);
-                        return None;
+                    'peerLoop: loop {
+                        match peer.has_data() {
+                            Ok(has_data) => {
+                                if !has_data {
+                                    break 'peerLoop;
+                                }
+                            }
+                            Err(e) => {
+                                println!("failed to check if peer has data {:?}", e);
+                                break 'peerLoop;
+                            }
+                        }
+
+                        if let Err(e) = handle_peer(&mut peer) {
+                            println!("failed to handle peer {:?}", e);
+                            return None;
+                        }
                     }
 
                     Some(peer)
@@ -206,7 +220,15 @@ impl PeerPool {
 }
 
 fn handle_peer(peer: &mut Peer) -> Result<(), io::Error> {
-    let msg = peer.receive_message()?;
+    let msg = match peer.receive_message() {
+        Ok(m) => m,
+        Err(e) => {
+            println!("failed to receive message {:?}", e);
+            return Err(e);
+        }
+    };
+    println!("got message type {:?}", msg.message_type);
+    println!("got message payload {:?}", msg.payload);
     match msg.message_type {
         MessageType::KeepAlive => {}
         MessageType::Choke => {

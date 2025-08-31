@@ -14,6 +14,7 @@ use crate::util::easy_err;
 const BITTORRENT_PROTOCOL: &str = "BitTorrent protocol";
 pub static KEEP_ALIVE_MAX_DURATION: time::Duration = time::Duration::from_secs(120);
 
+#[derive(Debug)]
 pub enum MessageType {
     KeepAlive = -1,
     Choke,
@@ -110,11 +111,11 @@ impl Peer {
         self.conn
             .as_mut()
             .unwrap()
-            .set_read_timeout(Some(time::Duration::from_secs(10)))?;
+            .set_read_timeout(Some(KEEP_ALIVE_MAX_DURATION))?;
         self.conn
             .as_mut()
             .unwrap()
-            .set_write_timeout(Some(time::Duration::from_secs(10)))?;
+            .set_write_timeout(Some(KEEP_ALIVE_MAX_DURATION))?;
         self.conn.as_mut().unwrap().set_nonblocking(false)?;
 
         Ok(())
@@ -183,9 +184,20 @@ impl Peer {
         }
 
         let mut buf = [0 as u8; 10];
-        let nread = self.conn.as_ref().unwrap().peek(&mut buf)?;
 
-        Ok(nread > 0)
+        self.conn.as_ref().unwrap().set_nonblocking(true)?;
+        let peek_res = self.conn.as_ref().unwrap().peek(&mut buf);
+        self.conn.as_ref().unwrap().set_nonblocking(false)?;
+
+        match peek_res {
+            Ok(nread) => return Ok(nread > 0),
+            Err(e) => {
+                if e.kind() == io::ErrorKind::WouldBlock {
+                    return Ok(false);
+                }
+                return Err(e);
+            }
+        }
     }
 
     pub fn receive_message(self: &Self) -> Result<Message, io::Error> {
@@ -243,8 +255,12 @@ impl Peer {
     }
 
     pub fn set_interested(self: &mut Self, interested: bool) -> Result<(), io::Error> {
-        if self.am_interested != interested && interested {
-            self.send_message(MessageType::Interested, None)?;
+        if self.am_interested != interested {
+            if interested {
+                self.send_message(MessageType::Interested, None)?;
+            } else {
+                self.send_message(MessageType::NotInterested, None)?;
+            }
         }
         self.am_interested = interested;
         Ok(())

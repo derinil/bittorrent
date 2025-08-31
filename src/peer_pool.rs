@@ -192,23 +192,27 @@ impl PeerPool {
 
             for _ in 0..self.thread_peers.len() {
                 let tp = self.thread_peers.swap_remove(0);
-                if tp.thread.is_finished() {
-                    match tp.thread.join() {
-                        Ok(p) => {
-                            if let Err(e) = p {
-                                println!("failed to download block {:?}", e);
-                                self.desired.insert(tp.block);
-                            } else {
-                                println!(
-                                    "downloaded block {} {}",
-                                    tp.block.piece_index, tp.block.byte_offset
-                                );
-                            }
+                if !tp.thread.is_finished() {
+                    self.thread_peers.push(tp);
+                    continue;
+                }
+                match tp.thread.join() {
+                    Ok(p) => match p {
+                        Ok(peer) => {
+                            println!(
+                                "downloaded block {} {}",
+                                tp.block.piece_index, tp.block.byte_offset
+                            );
+                            self.active_peers.push(peer);
                         }
                         Err(e) => {
-                            println!("failed to join thread {:?}", e);
+                            println!("failed to download block {:?}", e);
                             self.desired.insert(tp.block);
                         }
+                    },
+                    Err(e) => {
+                        println!("failed to join thread {:?}", e);
+                        self.desired.insert(tp.block);
                     }
                 }
             }
@@ -267,6 +271,7 @@ fn handle_peer(peer: &mut Peer) -> Result<(), io::Error> {
                 msg.payload.get(8..).unwrap(),
             )
             .expect("failed to write block file");
+            println!("downloaded piece");
         }
         MessageType::Cancel => {
             // TODO:

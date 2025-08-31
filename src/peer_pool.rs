@@ -157,7 +157,11 @@ impl PeerPool {
                 };
 
                 if let None = req_block {
-                    untouched_peers.push(ap);
+                    if let Err(e) = ap.set_interested(false) {
+                        println!("failed to set uninterested {:?}", e);
+                    } else {
+                        untouched_peers.push(ap);
+                    }
                     continue;
                 }
 
@@ -170,7 +174,7 @@ impl PeerPool {
 
                         if ap.has_data()? {
                             handle_peer(&mut ap)?;
-                        } 
+                        }
 
                         let mut payload: Vec<u8> = Vec::new();
                         payload.extend(block.piece_index.to_be_bytes());
@@ -260,7 +264,18 @@ fn handle_peer(peer: &mut Peer) -> Result<(), io::Error> {
             println!("peer gotbitfield {}", peer.peer_has.len());
         }
         MessageType::Request => {
-            // TODO:
+            let piece_idx = u32::from_be_bytes(msg.payload.get(0..4).unwrap().try_into().unwrap());
+            let byte_offset =
+                u32::from_be_bytes(msg.payload.get(4..8).unwrap().try_into().unwrap());
+
+            if let Ok(file_content) = fs::read(format!("./download/{}-{}", piece_idx, byte_offset))
+            {
+                let mut payload = Vec::new();
+                payload.extend(msg.payload.get(0..4).unwrap());
+                payload.extend(msg.payload.get(4..8).unwrap());
+                payload.extend(file_content);
+                peer.send_message(MessageType::Piece, Some(&payload))?;
+            }
         }
         MessageType::Piece => {
             let piece_idx = u32::from_be_bytes(msg.payload.get(0..4).unwrap().try_into().unwrap());
@@ -286,8 +301,7 @@ fn handle_peer(peer: &mut Peer) -> Result<(), io::Error> {
 
     if let Some(t) = peer.last_message_at {
         if t.elapsed() >= KEEP_ALIVE_MAX_DURATION {
-            println!("peer exceeded max keep alive duration");
-            // TODO: close connection
+            return Err(easy_err("peer exceeded max keep alive duration"));
         }
     }
 

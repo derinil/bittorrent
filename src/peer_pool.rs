@@ -5,16 +5,13 @@ use crate::{
     util::easy_err,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fs, io,
-    ops::Deref,
-    sync::mpsc::{self, Receiver, Sender},
     thread::{self, JoinHandle},
     time,
 };
 
 pub struct PeerPool {
-    peers: Vec<Peer>,
     server: Server,
     // these are unconnected peers
     backlog_peers: Vec<Peer>,
@@ -27,7 +24,7 @@ pub struct PeerPool {
 
 struct DownloadThread {
     block: Block,
-    thread: JoinHandle<Result<Peer, io::Error>>,
+    thread: JoinHandle<(Peer, bool)>,
 }
 
 const MAX_CONNECTIONS: usize = 64;
@@ -35,7 +32,6 @@ const MAX_CONNECTIONS: usize = 64;
 impl PeerPool {
     pub fn new(info_hash: [u8; 20]) -> Result<PeerPool, io::Error> {
         Ok(PeerPool {
-            peers: Vec::new(),
             server: Server::start()?,
             backlog_peers: Vec::new(),
             info_hash: info_hash,
@@ -46,17 +42,17 @@ impl PeerPool {
     }
 
     pub fn connect_peers(self: &mut Self, mut peers: Vec<Peer>) {
-        let mut ts: Vec<JoinHandle<Option<Peer>>> = Vec::new();
+        let mut ts: Vec<JoinHandle<(Peer, bool)>> = Vec::new();
 
         for _ in 0..peers.len() {
             let mut peer = peers.remove(0);
             let info_hash = self.info_hash.clone();
-            let t = thread::spawn(move || -> Option<Peer> {
+            let t = thread::spawn(move || -> (Peer, bool) {
                 match peer.connect() {
                     Ok(_) => {}
                     Err(e) => {
                         println!("failed to connect {:?}", e);
-                        return None;
+                        return (peer, false);
                     }
                 }
                 match peer.handshake(info_hash) {
@@ -66,10 +62,10 @@ impl PeerPool {
                         if let Err(e) = peer.disconnect() {
                             println!("failed to disconnect client bc of failed handshake {:?}", e);
                         }
-                        return None;
+                        return (peer, false);
                     }
                 }
-                Some(peer)
+                return (peer, true);
             });
             ts.push(t);
         }
@@ -78,8 +74,10 @@ impl PeerPool {
             let t = ts.remove(0);
             match t.join() {
                 Ok(p) => {
-                    if let Some(peer) = p {
-                        self.active_peers.push(peer);
+                    if p.1 {
+                        self.active_peers.push(p.0);
+                    } else {
+                        self.backlog_peers.push(p.0);
                     }
                 }
                 Err(e) => {
@@ -95,11 +93,23 @@ impl PeerPool {
 
     pub fn handle(self: &mut Self) {
         loop {
+            // Try to connect to backlog peers up to 5 times, one successfull connection resets count
+            if self.active_peers.len() + self.thread_peers.len() < MAX_CONNECTIONS
+                && self.backlog_peers.len()
+                    >= MAX_CONNECTIONS - (self.active_peers.len() + self.thread_peers.len())
             {
-                let mut ts: Vec<JoinHandle<Option<Peer>>> = Vec::new();
+                let backlog = self
+                    .backlog_peers
+                    .drain(0..MAX_CONNECTIONS - (self.active_peers.len() + self.thread_peers.len()))
+                    .collect();
+                self.connect_peers(backlog);
+            }
+
+            {
+                let mut ts: Vec<JoinHandle<(Peer, bool)>> = Vec::new();
                 for _ in 0..self.active_peers.len() {
                     let mut peer = self.active_peers.swap_remove(0);
-                    ts.push(thread::spawn(|| -> Option<Peer> {
+                    ts.push(thread::spawn(|| -> (Peer, bool) {
                         'peerLoop: loop {
                             match peer.has_data() {
                                 Ok(b) => {
@@ -109,25 +119,27 @@ impl PeerPool {
                                 }
                                 Err(e) => {
                                     println!("failed to check if peer has data {:?}", e);
-                                    return None;
+                                    return (peer, false);
                                 }
                             }
 
                             if let Err(e) = handle_peer(&mut peer) {
                                 println!("failed to handle peer {:?}", e);
-                                return None;
+                                return (peer, false);
                             }
                         }
 
-                        Some(peer)
+                        return (peer, true);
                     }));
                 }
                 for _ in 0..ts.len() {
                     let t = ts.remove(0);
                     match t.join() {
                         Ok(p) => {
-                            if let Some(peer) = p {
-                                self.active_peers.push(peer);
+                            if p.1 {
+                                self.active_peers.push(p.0);
+                            } else {
+                                self.backlog_peers.push(p.0);
                             }
                         }
                         Err(e) => {
@@ -167,25 +179,41 @@ impl PeerPool {
 
                 let block = *req_block.unwrap();
 
-                let t: JoinHandle<Result<Peer, io::Error>> =
-                    thread::spawn(move || -> Result<Peer, io::Error> {
-                        println!("fetching block {} {}", block.piece_index, block.byte_offset);
-                        ap.set_interested(true)?;
+                let t = thread::spawn(move || -> (Peer, bool) {
+                    println!("fetching block {} {}", block.piece_index, block.byte_offset);
+                    if let Err(e) = ap.set_interested(true) {
+                        println!("failed to set interested {:?}", e);
+                        return (ap, false);
+                    }
 
-                        if ap.has_data()? {
-                            handle_peer(&mut ap)?;
+                    match ap.has_data() {
+                        Ok(has_data) => 'apMatch: {
+                            if !has_data {
+                                break 'apMatch;
+                            }
+                            if let Err(e) = handle_peer(&mut ap) {
+                                println!("failed to handle peer before requesting {:?}", e);
+                                return (ap, false);
+                            }
                         }
+                        Err(e) => {
+                            println!("failed to check if peer has data before requesting {:?}", e);
+                            return (ap, false);
+                        }
+                    }
 
-                        let mut payload: Vec<u8> = Vec::new();
-                        payload.extend(block.piece_index.to_be_bytes());
-                        payload.extend(block.byte_offset.to_be_bytes());
-                        payload.extend(block.requested_length.to_be_bytes());
-                        ap.send_message(MessageType::Request, Some(&payload))?;
+                    let mut payload: Vec<u8> = Vec::new();
+                    payload.extend(block.piece_index.to_be_bytes());
+                    payload.extend(block.byte_offset.to_be_bytes());
+                    payload.extend(block.requested_length.to_be_bytes());
 
-                        handle_peer(&mut ap)?;
+                    if let Err(e) = ap.send_message(MessageType::Request, Some(&payload)) {
+                        println!("failed to send request message {:?}", e);
+                        return (ap, false);
+                    }
 
-                        Ok(ap)
-                    });
+                    (ap, true)
+                });
 
                 self.thread_peers.push(DownloadThread {
                     block: block,
@@ -203,19 +231,17 @@ impl PeerPool {
                     continue;
                 }
                 match tp.thread.join() {
-                    Ok(p) => match p {
-                        Ok(peer) => {
+                    Ok(p) => {
+                        if p.1 {
                             println!(
                                 "downloaded block {} {}",
                                 tp.block.piece_index, tp.block.byte_offset
                             );
-                            self.active_peers.push(peer);
+                            self.active_peers.push(p.0);
+                        } else {
+                            self.backlog_peers.push(p.0);
                         }
-                        Err(e) => {
-                            println!("failed to download block {:?}", e);
-                            self.desired.insert(tp.block);
-                        }
-                    },
+                    }
                     Err(e) => {
                         println!("failed to join thread {:?}", e);
                         self.desired.insert(tp.block);

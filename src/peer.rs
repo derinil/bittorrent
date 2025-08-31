@@ -87,7 +87,7 @@ impl Peer {
         }
     }
 
-    fn accept(self: &Self) {}
+    // TODO: fn accept(self: &Self) {}
 
     pub fn connect(self: &mut Self) -> Result<(), io::Error> {
         let c = TcpStream::connect_timeout(&self.addr, time::Duration::from_secs(3))?;
@@ -232,14 +232,6 @@ impl Peer {
             message_type: mt.unwrap(),
             payload: data,
         })
-    }
-
-    pub fn get_peer_id(self: &Self) -> Result<Option<String>, std::string::FromUtf8Error> {
-        if let None = self.peer_id {
-            return Ok(None);
-        }
-
-        Ok(Some(String::from_utf8(self.peer_id.unwrap().to_vec())?))
     }
 
     pub fn has_piece(self: &Self, piece_idx: u32) -> bool {

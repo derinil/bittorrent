@@ -20,6 +20,12 @@ pub struct Block {
     pub requested_length: u32,
 }
 
+pub struct DownloadBlock {
+    pub piece_index: u32,
+    pub byte_offset: u32,
+    pub data: Vec<u8>,
+}
+
 impl Block {
     pub fn new(piece_index: u32, byte_offset: u32) -> Block {
         Block {
@@ -27,6 +33,42 @@ impl Block {
             byte_offset: byte_offset,
             requested_length: DEFAULT_BLOCK_LENGTH,
         }
+    }
+
+    pub fn parse(payload: &Vec<u8>) -> Result<Block, io::Error> {
+        if payload.len() < 12 {
+            return Err(easy_err("payload too short to be block"));
+        }
+
+        Ok(Block {
+            piece_index: u32::from_be_bytes(payload.get(0..4).unwrap().try_into().unwrap()),
+            byte_offset: u32::from_be_bytes(payload.get(4..8).unwrap().try_into().unwrap()),
+            requested_length: u32::from_be_bytes(payload.get(8..12).unwrap().try_into().unwrap()),
+        })
+    }
+
+    pub fn to_bytes(&self) -> [u8; 12] {
+        let mut b = [0 as u8; 12];
+
+        b[0..4].copy_from_slice(&self.piece_index.to_be_bytes());
+        b[4..8].copy_from_slice(&self.byte_offset.to_be_bytes());
+        b[8..12].copy_from_slice(&self.requested_length.to_be_bytes());
+
+        b
+    }
+}
+
+impl DownloadBlock {
+    pub fn parse(payload: &Vec<u8>) -> Result<DownloadBlock, io::Error> {
+        if payload.len() < 9 {
+            return Err(easy_err("payload too short to be download block"));
+        }
+
+        Ok(DownloadBlock {
+            piece_index: u32::from_be_bytes(payload.get(0..4).unwrap().try_into().unwrap()),
+            byte_offset: u32::from_be_bytes(payload.get(4..8).unwrap().try_into().unwrap()),
+            data: payload.get(8..).unwrap().to_vec(),
+        })
     }
 }
 

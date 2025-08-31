@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::time;
 
+use crate::torrent::DownloadBlock;
 use crate::PEER_ID;
 use crate::torrent::Block;
 use crate::util::easy_err;
@@ -64,6 +65,9 @@ pub struct Peer {
     pub peer_interested: bool,
     pub peer_id: Option<[u8; 20]>,
 
+    pub request_queue: Vec<Block>,
+    pub downloaded_pieces: Vec<DownloadBlock>,
+
     // List of piece indexes
     pub peer_has: HashSet<u32>,
     pub block_movements: Vec<BlockMovement>,
@@ -98,6 +102,8 @@ impl Peer {
             peer_has: HashSet::new(),
             last_message_at: None,
             block_movements: Vec::new(),
+            request_queue: Vec::new(),
+            downloaded_pieces: Vec::new(),
         }
     }
 
@@ -274,6 +280,10 @@ impl Peer {
 
     pub fn can_download(&self) -> bool {
         !self.am_choked
+    }
+
+    pub fn can_upload(&self) -> bool {
+        !self.peer_choked && self.peer_interested
     }
 }
 

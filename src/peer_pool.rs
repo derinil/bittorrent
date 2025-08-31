@@ -192,7 +192,7 @@ impl PeerPool {
 
             for _ in 0..self.thread_peers.len() {
                 let tp = self.thread_peers.swap_remove(0);
-                if self.active_peers.len() > 0 && tp.thread.is_finished() {
+                if tp.thread.is_finished() {
                     match tp.thread.join() {
                         Ok(p) => {
                             if let Err(e) = p {
@@ -228,7 +228,6 @@ fn handle_peer(peer: &mut Peer) -> Result<(), io::Error> {
         }
     };
     println!("got message type {:?}", msg.message_type);
-    println!("got message payload {:?}", msg.payload);
     match msg.message_type {
         MessageType::KeepAlive => {}
         MessageType::Choke => {
@@ -252,11 +251,7 @@ fn handle_peer(peer: &mut Peer) -> Result<(), io::Error> {
         }
         MessageType::Bitfield => {
             peer.use_bitfield(&msg.payload);
-            println!(
-                "peer gotbitfield {:?} {}",
-                peer.peer_has,
-                peer.peer_has.len()
-            );
+            println!("peer gotbitfield {}", peer.peer_has.len());
         }
         MessageType::Request => {
             // TODO:

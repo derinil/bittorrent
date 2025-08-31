@@ -110,24 +110,18 @@ fn handle_download(
 }
 
 fn create_peer_id() -> [u8; 20] {
-    let mut bs: [u8; 20] = [0; 20];
-    let dip = "dips";
-    let mut off = 0;
-    bs[off..off + dip.len()].copy_from_slice(dip.as_bytes());
-    off += dip.len();
-    let ver = "001";
-    bs[off..off + ver.len()].copy_from_slice(ver.as_bytes());
-    off += ver.len();
-    let now = time::SystemTime::now();
-    let t = now
+    let mut v: Vec<u8> = Vec::new();
+    v.extend("dips-001-".as_bytes());
+
+    let mut nanos = time::SystemTime::now()
         .duration_since(time::UNIX_EPOCH)
         .unwrap()
-        .as_secs()
-        .to_string();
-    // TODO: this can overflow
-    bs[off..off + t.len()].copy_from_slice(t.as_bytes());
-    bs = bs.map(|n| -> u8 {
-        if n == 0 { b'D' } else { n }
-    });
-    bs
+        .as_nanos();
+
+    while v.len() != 20 {
+        v.push((nanos % 10) as u8 + '0' as u8);
+        nanos >>= 2;
+    }
+
+    v.try_into().unwrap()
 }

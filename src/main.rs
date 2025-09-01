@@ -46,7 +46,7 @@ fn main() {
 
     println!("creating target download file");
 
-    // TODO: seed mode which seeds directly from file
+    // TODO: seed mode which seeds directly from file without downloading
     let download_file = fs::File::create(download_file_name).unwrap();
     download_file.set_len(torr.total_size).unwrap();
 

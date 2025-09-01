@@ -193,8 +193,10 @@ impl Torrent {
             if s.len() % 20 != 0 {
                 return Err(easy_err("pieces length is not a multiple of 20"));
             }
-            for i in 0..s.len() / 20 {
+            let mut i = 0;
+            while i + 20 <= s.len() {
                 pieces.push(s[i..i + 20].try_into().unwrap());
+                i += 20;
             }
         }
 

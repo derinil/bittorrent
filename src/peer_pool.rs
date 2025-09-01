@@ -179,6 +179,7 @@ impl PeerPool {
         // TODO: join download threads and consolidate all pieces downloaded
 
         let pieces_left = self.get_pieces_left();
+        // TODO: random pieces
 
         let mut downloadable_peers: Vec<Peer> = self
             .active_peers
@@ -397,7 +398,7 @@ fn download_piece_from_peer(
                 byte_offset: b.byte_offset,
                 requested_length: b.data.len() as u32,
             }) {
-                println!("got one block");
+                println!("got block piece {} offset {}", b.piece_index, b.byte_offset);
             }
         });
     }

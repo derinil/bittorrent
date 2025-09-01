@@ -343,6 +343,7 @@ impl PeerPool {
         pl.retain(|i| !self.have_pieces.contains(i));
         pl.retain(|i| !self.pieces_in_progress.contains(i));
 
+        // Wasteful way of randomizing peer order
         pl.drain().collect()
     }
 }

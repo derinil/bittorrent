@@ -1,7 +1,7 @@
 use crate::{
     peer::{KEEP_ALIVE_MAX_DURATION, MessageType, Peer},
     server::Server,
-    torrent::{self, Block, DownloadBlock, Torrent},
+    torrent::{self, Block, DEFAULT_BLOCK_LENGTH, DownloadBlock, Torrent},
     util::easy_err,
 };
 use std::{
@@ -238,13 +238,17 @@ impl PeerPool {
             }
             assigned_pieces.insert(peer_piece.unwrap());
 
+            let piece_len = self.torrent.get_piece_len(peer_piece.unwrap());
             self.thread_peers.push(DownloadThread {
                 piece: peer_piece.unwrap(),
                 thread: thread::spawn(move || -> (Peer, bool) {
-                    if let Err(e) = handle_peer(&mut peer) {
-                        println!("failed to handle peer {:?}", e);
+                    if let Err(e) =
+                        download_piece_from_peer(&mut peer, peer_piece.unwrap(), piece_len)
+                    {
+                        println!("failed to download piece from peer {:?}", e);
                         return (peer, false);
                     }
+
                     (peer, true)
                 }),
             });
@@ -306,7 +310,7 @@ impl PeerPool {
     }
 
     fn count_pieces_left(&self) -> u32 {
-        self.torrent.piece_len
+        self.torrent.get_total_piece_count()
             - self.have_pieces.len() as u32
             - self.pieces_in_progress.len() as u32
     }
@@ -314,7 +318,8 @@ impl PeerPool {
     fn get_pieces_left(&self) -> Vec<u32> {
         let mut pl = Vec::new();
 
-        for i in 0..self.torrent.piece_len {
+        let piece_count = self.torrent.get_total_piece_count();
+        for i in 0..piece_count {
             pl.push(i);
         }
 
@@ -323,6 +328,81 @@ impl PeerPool {
 
         pl
     }
+}
+
+fn download_piece_from_peer(
+    peer: &mut Peer,
+    piece: u32,
+    piece_len: u32,
+) -> Result<bool, io::Error> {
+    let mut piece_data: Vec<u8> = Vec::new();
+    piece_data.reserve_exact(piece_len as usize);
+
+    let mut block_start = 0;
+    let mut requested_blocks = HashSet::new();
+
+    println!(
+        "requesting piece {} from peer {}",
+        piece,
+        peer.get_peer_id().unwrap().unwrap()
+    );
+
+    while peer.can_download() {
+        let mut block_len = DEFAULT_BLOCK_LENGTH;
+        if block_start + DEFAULT_BLOCK_LENGTH > piece_len {
+            block_len = piece_len - block_start;
+        }
+
+        let b = Block::new(piece, block_start, block_len);
+        requested_blocks.insert(b);
+
+        let mut payload = Vec::new();
+        payload.extend(b.to_bytes());
+        peer.send_message(MessageType::Request, Some(&payload))?;
+
+        block_start += DEFAULT_BLOCK_LENGTH;
+    }
+
+    println!(
+        "requested piece {} from peer {}, waiting for download",
+        piece,
+        peer.get_peer_id().unwrap().unwrap()
+    );
+
+    while requested_blocks.len() > 0 {
+        handle_peer(peer)?;
+        peer.downloaded_blocks.iter().for_each(|b| {
+            if requested_blocks.remove(&Block {
+                piece_index: b.piece_index,
+                byte_offset: b.byte_offset,
+                requested_length: b.data.len() as u32,
+            }) {
+                println!("got one block");
+            }
+        });
+    }
+
+    println!(
+        "downloaded piece {} from peer {}",
+        piece,
+        peer.get_peer_id().unwrap().unwrap()
+    );
+
+    // TODO: verify piece
+
+    for db in &peer.downloaded_blocks {
+        if db.piece_index != piece {
+            continue;
+        }
+        // TODO: safety check
+        piece_data[db.byte_offset as usize..db.byte_offset as usize + db.data.len()]
+            .copy_from_slice(&db.data);
+    }
+
+    let _ = fs::create_dir("./download");
+    let _ = fs::write(format!("./download/{}", piece), piece_data);
+
+    Ok(true)
 }
 
 fn handle_peer(peer: &mut Peer) -> Result<(), io::Error> {

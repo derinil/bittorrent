@@ -28,11 +28,11 @@ pub struct DownloadBlock {
 }
 
 impl Block {
-    pub fn new(piece_index: u32, byte_offset: u32) -> Block {
+    pub fn new(piece_index: u32, byte_offset: u32, requested_length: u32) -> Block {
         Block {
             piece_index: piece_index,
             byte_offset: byte_offset,
-            requested_length: DEFAULT_BLOCK_LENGTH,
+            requested_length: requested_length,
         }
     }
 
@@ -233,7 +233,7 @@ impl Torrent {
 
         println!("got total pieces {}", s.get_total_piece_count());
 
-        if s.get_total_piece_count() != s.piece_hashes.len() as u64 {
+        if s.get_total_piece_count() != s.piece_hashes.len() as u32 {
             return Err(easy_err(
                 "total piece count is not equal to piece hashes length",
             ));
@@ -242,8 +242,16 @@ impl Torrent {
         Ok(s)
     }
 
-    pub fn get_total_piece_count(self: &Self) -> u64 {
-        (self.total_size as f64 / self.piece_len as f64).ceil() as u64
+    pub fn get_total_piece_count(self: &Self) -> u32 {
+        (self.total_size as f64 / self.piece_len as f64).ceil() as u32
+    }
+
+    pub fn get_piece_len(self: &Self, piece: u32) -> u32 {
+        if piece == self.get_total_piece_count() - 1 {
+            return (self.total_size as u32 - ((piece - 1) * self.piece_len)) as u32;
+        }
+
+        self.piece_len as u32
     }
 
     pub fn get_info_hash_str(self: &Self) -> String {

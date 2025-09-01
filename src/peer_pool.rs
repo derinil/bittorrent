@@ -6,7 +6,7 @@ use crate::{
 };
 use std::{
     cmp::min,
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fs, io,
     thread::{self, JoinHandle},
     time,
@@ -32,6 +32,7 @@ struct DownloadThread {
 }
 
 const MAX_CONNECTIONS: usize = 64;
+const MAX_FAILED_CONNECTION_ATTEMPTS: u32 = 5;
 
 impl PeerPool {
     pub fn new(torrent: Torrent) -> Result<PeerPool, io::Error> {
@@ -58,6 +59,7 @@ impl PeerPool {
                     Ok(_) => {}
                     Err(e) => {
                         println!("failed to connect {:?}", e);
+                        peer.failed_connection_attempts += 1;
                         return (peer, false);
                     }
                 }
@@ -68,9 +70,11 @@ impl PeerPool {
                         if let Err(e) = peer.disconnect() {
                             println!("failed to disconnect client bc of failed handshake {:?}", e);
                         }
+                        peer.failed_connection_attempts += 1;
                         return (peer, false);
                     }
                 }
+                peer.failed_connection_attempts = 0;
                 return (peer, true);
             });
             ts.push(t);
@@ -83,7 +87,18 @@ impl PeerPool {
                     if p.1 {
                         self.active_peers.push(p.0);
                     } else {
-                        self.backlog_peers.push(p.0);
+                        if p.0.failed_connection_attempts < MAX_FAILED_CONNECTION_ATTEMPTS {
+                            self.backlog_peers.push(p.0);
+                        } else {
+                            let _ = p.0.get_peer_id().map(|r| {
+                                if let Some(pid) = r {
+                                    println!(
+                                        "removing peer {} from backlog, failed too many times",
+                                        pid
+                                    );
+                                }
+                            });
+                        }
                     }
                 }
                 Err(e) => {
@@ -225,6 +240,8 @@ impl PeerPool {
 
         let mut assigned_pieces = HashSet::new();
 
+        // TODO: fix downloading same piece over and over
+
         for mut peer in downloadable_peers {
             let mut peer_piece = None;
             for piece in &pieces_left {
@@ -265,6 +282,8 @@ impl PeerPool {
             match dt.thread.join() {
                 Ok(p) => {
                     if p.1 {
+                        self.have_pieces.insert(dt.piece);
+                        self.pieces_in_progress.remove(&dt.piece);
                         self.active_peers.push(p.0);
                     } else {
                         self.backlog_peers.push(p.0);

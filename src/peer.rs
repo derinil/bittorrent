@@ -72,6 +72,7 @@ pub struct Peer {
     pub peer_has: HashSet<u32>,
     pub block_movements: Vec<BlockMovement>, // TODO: update this based on messages
 
+    pub failed_connection_attempts: u32,
     pub last_message_at: Option<time::Instant>,
 }
 
@@ -104,6 +105,7 @@ impl Peer {
             block_movements: Vec::new(),
             request_queue: Vec::new(),
             downloaded_blocks: Vec::new(),
+            failed_connection_attempts: 0,
         }
     }
 

@@ -347,7 +347,8 @@ fn download_piece_from_peer(
         peer.get_peer_id().unwrap().unwrap()
     );
 
-    while peer.can_download() {
+    while block_start < piece_len {
+        println!("piece {} len {} start {}", piece, piece_len, block_start);
         let mut block_len = DEFAULT_BLOCK_LENGTH;
         if block_start + DEFAULT_BLOCK_LENGTH > piece_len {
             block_len = piece_len - block_start;
@@ -390,14 +391,14 @@ fn download_piece_from_peer(
 
     // TODO: verify piece
 
-    for db in &peer.downloaded_blocks {
-        if db.piece_index != piece {
-            continue;
-        }
-        // TODO: safety check
-        piece_data[db.byte_offset as usize..db.byte_offset as usize + db.data.len()]
-            .copy_from_slice(&db.data);
-    }
+    let mut piece_blocks: Vec<DownloadBlock> = peer
+        .downloaded_blocks
+        .extract_if(.., |db| db.piece_index == piece)
+        .collect();
+    piece_blocks.sort_by(|db1, db2| db1.byte_offset.cmp(&db2.byte_offset));
+    piece_blocks.iter().for_each(|pb| {
+        piece_data.extend(&pb.data);
+    });
 
     let _ = fs::create_dir("./download");
     let _ = fs::write(format!("./download/{}", piece), piece_data);

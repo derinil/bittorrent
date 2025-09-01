@@ -47,7 +47,7 @@ fn main() {
     println!("creating target download file");
 
     // TODO: seed mode which seeds directly from file
-    let download_file = fs::File::create_new(download_file_name).unwrap();
+    let download_file = fs::File::create(download_file_name).unwrap();
     download_file.set_len(torr.total_size).unwrap();
 
     'announceLoop: for announcer in torr.announce_urls.split_at(2).1 {

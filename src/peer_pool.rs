@@ -397,6 +397,8 @@ impl PeerPool {
                         continue;
                     }
                     let piece_data = p.0.as_ref().unwrap();
+                    println!("{:02X?}", self.torrent.piece_hashes.get(dt.piece as usize).unwrap());
+                    println!("{:02X?}", sha1_smol::Sha1::from(piece_data).digest().bytes().as_ref());
                     if self.torrent.piece_hashes.get(dt.piece as usize).unwrap()
                         != sha1_smol::Sha1::from(piece_data).digest().bytes().as_ref()
                     {

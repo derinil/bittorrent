@@ -2,7 +2,8 @@ bittorrent client
 
 a very naive (currently) bittorrent client. starts threads for individual peers when necessary,
 for example when reading messages, downloading/uploading data.
-it is very easily crashable by malicious clients/messages.
+it is very easily crashable by malicious clients/messages. but as peers' messages are always handled inside threads
+the panics/crashes don't propagate thus allowing the client to run somewhat smoothly.
 
 supported beps:
 

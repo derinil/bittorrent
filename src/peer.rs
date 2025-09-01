@@ -70,21 +70,21 @@ pub struct Peer {
 
     // List of piece indexes
     pub peer_has: HashSet<u32>,
-    pub block_movements: Vec<BlockMovement>, // TODO: update this based on messages
+    pub data_movements: Vec<DataMovement>, // TODO: clear entries older than 2 x choke interval
 
     pub failed_connection_attempts: u32,
     pub last_message_at: Option<time::Instant>,
 }
 
-enum BlockDirection {
-    UploadedToPeer,
-    DownloadedFromPeer,
+pub struct DataMovement {
+    pub data_len: usize,
+    pub when: time::Instant,
+    pub direction: DataDirection,
 }
 
-struct BlockMovement {
-    block: Block,
-    when: time::Instant,
-    direction: BlockDirection,
+pub enum DataDirection {
+    UploadedToPeer,
+    DownloadedFromPeer,
 }
 
 impl Peer {
@@ -102,7 +102,7 @@ impl Peer {
             peer_id: None,
             peer_has: HashSet::new(),
             last_message_at: None,
-            block_movements: Vec::new(),
+            data_movements: Vec::new(),
             request_queue: Vec::new(),
             downloaded_blocks: Vec::new(),
             failed_connection_attempts: 0,
@@ -309,11 +309,11 @@ impl Peer {
     // Returns bytes per second
     pub fn calculate_upload_rate(&self, interval: time::Duration) -> usize {
         let mut total_bytes: usize = 0;
-        for bm in &self.block_movements {
-            if matches!(bm.direction, BlockDirection::DownloadedFromPeer)
+        for bm in &self.data_movements {
+            if matches!(bm.direction, DataDirection::DownloadedFromPeer)
                 && bm.when.elapsed() < interval
             {
-                total_bytes += bm.block.requested_length as usize;
+                total_bytes += bm.data_len;
             }
         }
         total_bytes / interval.as_secs() as usize

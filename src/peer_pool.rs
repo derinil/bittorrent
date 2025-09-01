@@ -1,14 +1,13 @@
 use crate::{
-    peer::{KEEP_ALIVE_MAX_DURATION, MessageType, Peer},
+    peer::{DataDirection, DataMovement, KEEP_ALIVE_MAX_DURATION, MessageType, Peer},
     server::Server,
-    torrent::{self, Block, DEFAULT_BLOCK_LENGTH, DownloadBlock, Torrent},
+    torrent::{Block, DEFAULT_BLOCK_LENGTH, DownloadBlock, Torrent},
     util::easy_err,
 };
 use std::{
     cmp::min,
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fs, io,
-    sync::Arc,
     thread::{self, JoinHandle},
     time,
 };
@@ -21,7 +20,8 @@ pub struct PeerPool {
     server: Server,
 
     active_peers: Vec<Peer>,
-    thread_peers: Vec<DownloadThread>,
+    downloading_threads: Vec<DownloadThread>,
+    uploading_threads: Vec<UploadThread>,
     backlog_peers: Vec<Peer>, // these are unconnected peers
 
     last_choke_update: time::Instant,
@@ -30,6 +30,10 @@ pub struct PeerPool {
 
 struct DownloadThread {
     piece: u32,
+    thread: JoinHandle<(Peer, bool)>,
+}
+
+struct UploadThread {
     thread: JoinHandle<(Peer, bool)>,
 }
 
@@ -46,7 +50,8 @@ impl PeerPool {
             server: Server::start()?,
             backlog_peers: Vec::new(),
             active_peers: Vec::new(),
-            thread_peers: Vec::new(),
+            downloading_threads: Vec::new(),
+            uploading_threads: Vec::new(),
             last_choke_update: time::Instant::now(),
             last_optimic_unchoke: time::Instant::now(),
         })
@@ -121,6 +126,8 @@ impl PeerPool {
             // peers after download is finished.
             if self.count_pieces_left() > 0 {
                 self.attempt_backlog_connections();
+            } else {
+                self.backlog_peers.clear();
             }
 
             self.consume_messages();
@@ -179,7 +186,7 @@ impl PeerPool {
     }
 
     // Returns peer ids to unchoke, any peer id not in this list is to be choked
-    fn decide_unchoke(&mut self) -> (Vec<[u8; 20]>) {
+    fn decide_unchoke(&mut self) -> Vec<[u8; 20]> {
         self.last_choke_update = time::Instant::now();
 
         let choke_rate_interval = time::Duration::from_secs(30);
@@ -352,7 +359,7 @@ impl PeerPool {
             assigned_pieces.insert(peer_piece.unwrap());
 
             let piece_len = self.torrent.get_piece_len(peer_piece.unwrap());
-            self.thread_peers.push(DownloadThread {
+            self.downloading_threads.push(DownloadThread {
                 piece: peer_piece.unwrap(),
                 thread: thread::spawn(move || -> (Peer, bool) {
                     if let Err(e) =
@@ -370,7 +377,7 @@ impl PeerPool {
         self.pieces_in_progress.extend(assigned_pieces);
 
         let done_threads: Vec<DownloadThread> = self
-            .thread_peers
+            .downloading_threads
             .extract_if(.., |dt| dt.thread.is_finished())
             .collect();
 
@@ -394,7 +401,57 @@ impl PeerPool {
     }
 
     fn upload(self: &mut Self) {
-        // TODO: loop through peers, check request queue
+        let uploadable_peers: Vec<Peer> = self
+            .active_peers
+            .extract_if(.., |ap| {
+                !ap.peer_choked
+                    && ap.peer_interested
+                    && ap
+                        .request_queue
+                        .iter()
+                        .any(|b| self.have_pieces.contains(&b.piece_index))
+            })
+            .collect();
+
+        for mut up in uploadable_peers {
+            self.uploading_threads.push(UploadThread {
+                thread: thread::spawn(|| -> (Peer, bool) {
+                    if up.request_queue.len() == 0 {
+                        return (up, true);
+                    }
+                    for rq in &up.request_queue {
+                        // TODO: actually send data - read from fs!
+                        up.data_movements.push(DataMovement {
+                            data_len: rq.requested_length as usize,
+                            direction: DataDirection::UploadedToPeer,
+                            when: time::Instant::now(),
+                        });
+                    }
+
+                    return (up, true);
+                }),
+            });
+        }
+
+        let done_threads: Vec<UploadThread> = self
+            .uploading_threads
+            .extract_if(.., |dt| dt.thread.is_finished())
+            .collect();
+
+        for dt in done_threads {
+            match dt.thread.join() {
+                Ok(p) => {
+                    if p.1 {
+                        self.active_peers.push(p.0);
+                    } else {
+                        self.backlog_peers.push(p.0);
+                    }
+                }
+                Err(e) => {
+                    println!("failed to join thread {:?}", e);
+                }
+            }
+        }
     }
 
     fn check_keep_alive(self: &mut Self) {
@@ -405,7 +462,7 @@ impl PeerPool {
     }
 
     fn attempt_backlog_connections(self: &mut Self) {
-        if self.active_peers.len() + self.thread_peers.len() >= MAX_CONNECTIONS {
+        if self.active_peers.len() + self.downloading_threads.len() >= MAX_CONNECTIONS {
             return;
         }
         if self.backlog_peers.len() == 0 {
@@ -416,7 +473,7 @@ impl PeerPool {
             .drain(
                 0..min(
                     self.backlog_peers.len(),
-                    MAX_CONNECTIONS - (self.active_peers.len() + self.thread_peers.len()),
+                    MAX_CONNECTIONS - (self.active_peers.len() + self.downloading_threads.len()),
                 ),
             )
             .collect();
@@ -558,8 +615,13 @@ fn handle_peer(peer: &mut Peer) -> Result<(), io::Error> {
             peer.request_queue.push(Block::parse(&msg.payload).unwrap());
         }
         MessageType::Piece => {
-            peer.downloaded_blocks
-                .push(DownloadBlock::parse(&msg.payload).unwrap());
+            let db = DownloadBlock::parse(&msg.payload).unwrap();
+            peer.data_movements.push(DataMovement {
+                data_len: db.data.len(),
+                direction: DataDirection::DownloadedFromPeer,
+                when: time::Instant::now(),
+            });
+            peer.downloaded_blocks.push(db);
         }
         MessageType::Cancel => {
             let b = Block::parse(&msg.payload).unwrap();

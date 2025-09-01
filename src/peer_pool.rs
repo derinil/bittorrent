@@ -115,7 +115,6 @@ impl PeerPool {
             // Try to connect to backlog peers.
             // Only do this while downloading, no need to actively seek
             // peers after download is finished.
-            // TODO: up to 5 times, one successfull connection resets count.
             if self.count_pieces_left() > 0 {
                 self.attempt_backlog_connections();
             }
@@ -271,7 +270,8 @@ impl PeerPool {
             });
         }
 
-        self.pieces_in_progress.extend(assigned_pieces.iter());
+        // TODO: maybe issue here?
+        self.pieces_in_progress.extend(assigned_pieces);
 
         let done_threads: Vec<DownloadThread> = self
             .thread_peers
@@ -283,7 +283,6 @@ impl PeerPool {
                 Ok(p) => {
                     if p.1 {
                         self.have_pieces.insert(dt.piece);
-                        self.pieces_in_progress.remove(&dt.piece);
                         self.active_peers.push(p.0);
                     } else {
                         self.backlog_peers.push(p.0);
@@ -293,6 +292,7 @@ impl PeerPool {
                     println!("failed to join thread {:?}", e);
                 }
             }
+            self.pieces_in_progress.remove(&dt.piece);
         }
     }
 
@@ -342,8 +342,8 @@ impl PeerPool {
             pl.push(i);
         }
 
-        let _ = pl.extract_if(.., |i| -> bool { self.have_pieces.contains(i) });
-        let _ = pl.extract_if(.., |i| -> bool { self.pieces_in_progress.contains(i) });
+        pl.retain(|i| !self.have_pieces.contains(i));
+        pl.retain(|i| !self.pieces_in_progress.contains(i));
 
         pl
     }

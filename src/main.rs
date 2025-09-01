@@ -1,8 +1,8 @@
-use std::fs::File;
+use std::env;
+use std::fs::{self, File};
 use std::io::Read;
 use std::sync::OnceLock;
 use std::time;
-use std::{env, process};
 
 use crate::peer_pool::PeerPool;
 use crate::torrent::Torrent;
@@ -19,12 +19,9 @@ static PEER_ID: OnceLock<[u8; 20]> = OnceLock::new();
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        println!("missing torrent filename");
-        process::exit(1);
-    }
 
-    let file_name = args.get(1).unwrap();
+    let file_name = args.get(1).expect("torrent file name is missing");
+    let download_file_name = args.get(2).expect("download file name is missing");
 
     println!("downloading torrent {}", file_name);
 
@@ -44,8 +41,14 @@ fn main() {
 
     let torr = torrent::Torrent::parse(file_content).expect("failed to parse torrent");
 
-    let mut pool =
-        peer_pool::PeerPool::new(torr.clone()).expect("failed to create shared peer pool");
+    let mut pool = peer_pool::PeerPool::new(torr.clone(), download_file_name.clone())
+        .expect("failed to create shared peer pool");
+
+    println!("creating target download file");
+
+    // TODO: seed mode which seeds directly from file
+    let download_file = fs::File::create_new(download_file_name).unwrap();
+    download_file.set_len(torr.total_size).unwrap();
 
     'announceLoop: for announcer in torr.announce_urls.split_at(2).1 {
         if announcer.starts_with("udp://") {

@@ -7,7 +7,10 @@ use crate::{
 use std::{
     cmp::min,
     collections::HashSet,
-    fs, io,
+    fs,
+    io::{self, Write},
+    os::unix::fs::FileExt,
+    sync::Arc,
     thread::{self, JoinHandle},
     time,
 };
@@ -18,6 +21,7 @@ pub struct PeerPool {
     pieces_in_progress: HashSet<u32>,
 
     server: Server,
+    download_file_name: String,
 
     active_peers: Vec<Peer>,
     downloading_threads: Vec<DownloadThread>,
@@ -30,7 +34,7 @@ pub struct PeerPool {
 
 struct DownloadThread {
     piece: u32,
-    thread: JoinHandle<(Peer, bool)>,
+    thread: JoinHandle<(Option<Vec<u8>>, Peer, bool)>,
 }
 
 struct UploadThread {
@@ -42,7 +46,7 @@ const MAX_FAILED_CONNECTION_ATTEMPTS: u32 = 5;
 const DECIDE_CHOKE_INTERVAL: time::Duration = time::Duration::from_secs(10);
 
 impl PeerPool {
-    pub fn new(torrent: Torrent) -> Result<PeerPool, io::Error> {
+    pub fn new(torrent: Torrent, download_file_name: String) -> Result<PeerPool, io::Error> {
         Ok(PeerPool {
             torrent: torrent,
             have_pieces: HashSet::new(),
@@ -50,6 +54,7 @@ impl PeerPool {
             server: Server::start()?,
             backlog_peers: Vec::new(),
             active_peers: Vec::new(),
+            download_file_name: download_file_name,
             downloading_threads: Vec::new(),
             uploading_threads: Vec::new(),
             last_choke_update: time::Instant::now(),
@@ -361,15 +366,16 @@ impl PeerPool {
             let piece_len = self.torrent.get_piece_len(peer_piece.unwrap());
             self.downloading_threads.push(DownloadThread {
                 piece: peer_piece.unwrap(),
-                thread: thread::spawn(move || -> (Peer, bool) {
-                    if let Err(e) =
-                        download_piece_from_peer(&mut peer, peer_piece.unwrap(), piece_len)
-                    {
-                        println!("failed to download piece from peer {:?}", e);
-                        return (peer, false);
+                thread: thread::spawn(move || -> (Option<Vec<u8>>, Peer, bool) {
+                    match download_piece_from_peer(&mut peer, peer_piece.unwrap(), piece_len) {
+                        Ok(p) => {
+                            return (Some(p), peer, true);
+                        }
+                        Err(e) => {
+                            println!("failed to download piece from peer {:?}", e);
+                            return (None, peer, false);
+                        }
                     }
-
-                    (peer, true)
                 }),
             });
         }
@@ -381,22 +387,72 @@ impl PeerPool {
             .extract_if(.., |dt| dt.thread.is_finished())
             .collect();
 
+        let mut pieces_downloaded = Vec::new();
+
         for dt in done_threads {
             match dt.thread.join() {
                 Ok(p) => {
-                    if p.1 {
-                        // TODO: keep track of HAVE announced pieces, and announce them
-                        self.have_pieces.insert(dt.piece);
-                        self.active_peers.push(p.0);
-                    } else {
-                        self.backlog_peers.push(p.0);
+                    if !p.2 {
+                        self.backlog_peers.push(p.1);
+                        continue;
                     }
+                    let piece_data = p.0.as_ref().unwrap();
+                    if self.torrent.piece_hashes.get(dt.piece as usize).unwrap()
+                        != sha1_smol::Sha1::from(piece_data).digest().bytes().as_ref()
+                    {
+                        println!("got false hash for piece {}", dt.piece);
+                        continue;
+                    }
+                    let mut f = fs::OpenOptions::new()
+                        .write(true)
+                        .read(false)
+                        .truncate(false)
+                        .open(&self.download_file_name)
+                        .unwrap();
+                    f.write_all_at(
+                        p.0.as_ref().unwrap(),
+                        (dt.piece * self.torrent.piece_len) as u64,
+                    )
+                    .unwrap();
+                    f.flush().unwrap();
+                    self.have_pieces.insert(dt.piece);
+                    self.active_peers.push(p.1);
+                    pieces_downloaded.push(dt.piece);
                 }
                 Err(e) => {
                     println!("failed to join thread {:?}", e);
                 }
             }
             self.pieces_in_progress.remove(&dt.piece);
+        }
+
+        let pieces_downloaded_shared = Arc::new(pieces_downloaded);
+        let mut ts = Vec::new();
+        for ap in self.active_peers.drain(..) {
+            let pieces_cloned = pieces_downloaded_shared.clone();
+            ts.push(thread::spawn(move || -> Option<Peer> {
+                for piece in pieces_cloned.as_ref() {
+                    if let Err(e) =
+                        ap.send_message(MessageType::Have, Some(&piece.to_be_bytes().to_vec()))
+                    {
+                        println!("failed to set have for peer {:?}", e);
+                        return None;
+                    }
+                }
+                Some(ap)
+            }));
+        }
+        for t in ts {
+            match t.join() {
+                Ok(p) => {
+                    if let Some(peer) = p {
+                        self.active_peers.push(peer);
+                    }
+                }
+                Err(e) => {
+                    println!("failed to join thread {:?}", e);
+                }
+            }
         }
     }
 
@@ -414,13 +470,28 @@ impl PeerPool {
             .collect();
 
         for mut up in uploadable_peers {
+            let download_file_name = self.download_file_name.clone();
+            let piece_len = self.torrent.piece_len.clone();
             self.uploading_threads.push(UploadThread {
-                thread: thread::spawn(|| -> (Peer, bool) {
+                thread: thread::spawn(move || -> (Peer, bool) {
                     if up.request_queue.len() == 0 {
                         return (up, true);
                     }
                     for rq in &up.request_queue {
-                        // TODO: actually send data - read from fs!
+                        let f = fs::OpenOptions::new()
+                            .write(false)
+                            .read(true)
+                            .truncate(false)
+                            .open(&download_file_name)
+                            .unwrap();
+                        let mut data = vec![0 as u8; rq.requested_length as usize];
+                        f.read_exact_at(&mut data, (rq.piece_index * piece_len) as u64)
+                            .unwrap();
+                        let mut payload = Vec::new();
+                        payload.extend(rq.piece_index.to_be_bytes());
+                        payload.extend(rq.byte_offset.to_be_bytes());
+                        payload.extend(data);
+                        up.send_message(MessageType::Piece, Some(&payload)).unwrap();
                         up.data_movements.push(DataMovement {
                             data_len: rq.requested_length as usize,
                             direction: DataDirection::UploadedToPeer,
@@ -508,7 +579,7 @@ fn download_piece_from_peer(
     peer: &mut Peer,
     piece: u32,
     piece_len: u32,
-) -> Result<bool, io::Error> {
+) -> Result<Vec<u8>, io::Error> {
     let mut piece_data: Vec<u8> = Vec::new();
     piece_data.reserve_exact(piece_len as usize);
 
@@ -563,8 +634,6 @@ fn download_piece_from_peer(
         peer.get_peer_id().unwrap().unwrap()
     );
 
-    // TODO: verify piece
-
     let mut piece_blocks: Vec<DownloadBlock> = peer
         .downloaded_blocks
         .extract_if(.., |db| db.piece_index == piece)
@@ -574,10 +643,7 @@ fn download_piece_from_peer(
         piece_data.extend(&pb.data);
     });
 
-    let _ = fs::create_dir("./download");
-    let _ = fs::write(format!("./download/{}", piece), piece_data);
-
-    Ok(true)
+    Ok(piece_data)
 }
 
 fn handle_peer(peer: &mut Peer) -> Result<(), io::Error> {

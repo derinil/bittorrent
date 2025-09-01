@@ -230,7 +230,7 @@ impl Peer {
         }
 
         let mut buf = [0; 4];
-        self.conn.as_ref().unwrap().read_exact(&mut buf)?;
+        loop_read(&mut self.conn.as_ref().unwrap(), &mut buf, 4)?;
 
         let data_len = u32::from_be_bytes(buf.try_into().unwrap()) as usize;
         if data_len == 0 {
@@ -241,11 +241,7 @@ impl Peer {
         }
 
         let mut data = vec![0; data_len];
-        let mut total_read = 0;
-        while total_read < data_len {
-            let nread = self.conn.as_ref().unwrap().read(&mut data[total_read..])?;
-            total_read += nread;
-        }
+        loop_read(&mut self.conn.as_ref().unwrap(), &mut data, data_len)?;
 
         let mt = MessageType::from_u8(data.remove(0));
         if let None = mt {
@@ -297,6 +293,16 @@ impl Peer {
 
         Ok(Some(String::from_utf8(self.peer_id.unwrap().to_vec())?))
     }
+}
+
+fn loop_read<T: Read>(r: &mut T, buf: &mut [u8], goal_read: usize) -> Result<(), io::Error> {
+    let mut total_read = 0;
+    while total_read < goal_read {
+        let nread = r.read(&mut buf[total_read..])?;
+        total_read += nread;
+    }
+
+    Ok(())
 }
 
 impl Drop for Peer {

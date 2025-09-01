@@ -15,3 +15,6 @@ todo:
 - http trackers
 - verify HAVE messages, blacklist and choke
 - endgame mode
+
+failed to receive message Error { kind: UnexpectedEof, message: "failed to fill whole buffer" }
+failed to download piece from peer Error { kind: UnexpectedEof, message: "failed to fill whole buffer" }

@@ -240,8 +240,6 @@ impl PeerPool {
 
         let mut assigned_pieces = HashSet::new();
 
-        // TODO: fix downloading same piece over and over
-
         for mut peer in downloadable_peers {
             let mut peer_piece = None;
             for piece in &pieces_left {
@@ -271,7 +269,6 @@ impl PeerPool {
             });
         }
 
-        // TODO: maybe issue here?
         self.pieces_in_progress.extend(assigned_pieces);
 
         let done_threads: Vec<DownloadThread> = self
@@ -336,17 +333,17 @@ impl PeerPool {
     }
 
     fn get_pieces_left(&self) -> Vec<u32> {
-        let mut pl = Vec::new();
+        let mut pl = HashSet::new();
 
         let piece_count = self.torrent.get_total_piece_count();
         for i in 0..piece_count {
-            pl.push(i);
+            pl.insert(i);
         }
 
         pl.retain(|i| !self.have_pieces.contains(i));
         pl.retain(|i| !self.pieces_in_progress.contains(i));
 
-        pl
+        pl.drain().collect()
     }
 }
 

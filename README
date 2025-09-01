@@ -5,6 +5,8 @@ for example when reading messages, downloading/uploading data.
 it is very easily crashable by malicious clients/messages. but as peers' messages are always handled inside threads
 the panics/crashes don't propagate thus allowing the client to run somewhat smoothly.
 
+currently downloads the wired cd torrent (55.5mb) in 9 minutes with around 1 peer. (https://webtorrent.io/free-torrents)
+
 supported beps:
 
 - udp trackers https://bittorrent.org/beps/bep_0015.html
@@ -19,6 +21,7 @@ todo:
 - http trackers
 - verify HAVE messages, blacklist and choke
 - endgame mode
+- faster download
 
 failed to receive message Error { kind: UnexpectedEof, message: "failed to fill whole buffer" }
 failed to download piece from peer Error { kind: UnexpectedEof, message: "failed to fill whole buffer" }

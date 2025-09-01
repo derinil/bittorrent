@@ -142,10 +142,9 @@ impl PeerPool {
             }
 
             if self.count_pieces_left() > 0 {
-                self.download(); // TODO: add another step to actually write pieces to filesystem
+                self.download();
             }
-            // TODO: send have messages
-            self.upload(); // TODO: this will send pieces
+            self.upload();
             self.check_keep_alive();
         }
     }
@@ -286,10 +285,7 @@ impl PeerPool {
     }
 
     fn download(self: &mut Self) {
-        // TODO: join download threads and consolidate all pieces downloaded
-
         let pieces_left = self.get_pieces_left();
-        // TODO: random pieces
 
         let mut downloadable_peers: Vec<Peer> = self
             .active_peers
@@ -426,6 +422,10 @@ impl PeerPool {
             self.pieces_in_progress.remove(&dt.piece);
         }
 
+        if self.get_pieces_left().len() == 0 {
+            println!("torrent finished downloading");
+        }
+
         let pieces_downloaded_shared = Arc::new(pieces_downloaded);
         let mut ts = Vec::new();
         for ap in self.active_peers.drain(..) {
@@ -530,6 +530,7 @@ impl PeerPool {
             ap.last_message_at.is_none()
                 || ap.last_message_at.unwrap().elapsed() < KEEP_ALIVE_MAX_DURATION
         });
+        // TODO: move these to backlog, also send keep alive messages
     }
 
     fn attempt_backlog_connections(self: &mut Self) {

@@ -223,27 +223,47 @@ impl PeerPool {
             }
         }
 
-        let mut assigned_pieces = HashMap::new();
+        let mut assigned_pieces = HashSet::new();
 
-        'peerLoop: for peer in &downloadable_peers {
+        for mut peer in downloadable_peers {
+            let mut peer_piece = None;
             for piece in &pieces_left {
-                assigned_pieces.insert(peer.ip_address, piece.clone());
-                continue 'peerLoop;
+                if !assigned_pieces.contains(piece) {
+                    peer_piece = Some(*piece);
+                    break;
+                }
             }
+            if peer_piece.is_none() {
+                continue;
+            }
+            assigned_pieces.insert(peer_piece.unwrap());
+
+            self.thread_peers.push(DownloadThread {
+                piece: peer_piece.unwrap(),
+                thread: thread::spawn(move || -> (Peer, bool) {
+                    if let Err(e) = handle_peer(&mut peer) {
+                        println!("failed to handle peer {:?}", e);
+                        return (peer, false);
+                    }
+                    (peer, true)
+                }),
+            });
         }
 
-        let ts = spawn_peer_threads(&mut downloadable_peers, |mut p: Peer| -> Option<Peer> {
-            if let Err(e) = handle_peer(&mut p) {
-                println!("failed to handle peer {:?}", e);
-                return None;
-            }
-            Some(p)
-        });
-        for t in ts {
-            match t.join() {
+        self.pieces_in_progress.extend(assigned_pieces.iter());
+
+        let done_threads: Vec<DownloadThread> = self
+            .thread_peers
+            .extract_if(.., |dt| dt.thread.is_finished())
+            .collect();
+
+        for dt in done_threads {
+            match dt.thread.join() {
                 Ok(p) => {
-                    if let Some(peer) = p {
-                        downloadable_peers.push(peer);
+                    if p.1 {
+                        self.active_peers.push(p.0);
+                    } else {
+                        self.backlog_peers.push(p.0);
                     }
                 }
                 Err(e) => {

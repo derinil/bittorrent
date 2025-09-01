@@ -287,6 +287,14 @@ impl Peer {
     pub fn can_upload(&self) -> bool {
         !self.peer_choked && self.peer_interested
     }
+
+    pub fn get_peer_id(self: &Self) -> Result<Option<String>, std::string::FromUtf8Error> {
+        if let None = self.peer_id {
+            return Ok(None);
+        }
+
+        Ok(Some(String::from_utf8(self.peer_id.unwrap().to_vec())?))
+    }
 }
 
 impl Drop for Peer {

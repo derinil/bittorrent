@@ -278,6 +278,18 @@ impl Peer {
         Ok(())
     }
 
+    pub fn set_choked(self: &mut Self, choked: bool) -> Result<(), io::Error> {
+        if self.peer_choked != choked {
+            if choked {
+                self.send_message(MessageType::Choke, None)?;
+            } else {
+                self.send_message(MessageType::Unchoke, None)?;
+            }
+        }
+        self.peer_choked = choked;
+        Ok(())
+    }
+
     pub fn can_download(&self) -> bool {
         !self.am_choked
     }
@@ -292,6 +304,19 @@ impl Peer {
         }
 
         Ok(Some(String::from_utf8(self.peer_id.unwrap().to_vec())?))
+    }
+
+    // Returns bytes per second
+    pub fn calculate_upload_rate(&self, interval: time::Duration) -> usize {
+        let mut total_bytes: usize = 0;
+        for bm in &self.block_movements {
+            if matches!(bm.direction, BlockDirection::DownloadedFromPeer)
+                && bm.when.elapsed() < interval
+            {
+                total_bytes += bm.block.requested_length as usize;
+            }
+        }
+        total_bytes / interval.as_secs() as usize
     }
 }
 

@@ -6,8 +6,9 @@ use crate::{
 };
 use std::{
     cmp::min,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs, io,
+    sync::Arc,
     thread::{self, JoinHandle},
     time,
 };
@@ -24,6 +25,7 @@ pub struct PeerPool {
     backlog_peers: Vec<Peer>, // these are unconnected peers
 
     last_choke_update: time::Instant,
+    last_optimic_unchoke: time::Instant,
 }
 
 struct DownloadThread {
@@ -33,6 +35,7 @@ struct DownloadThread {
 
 const MAX_CONNECTIONS: usize = 64;
 const MAX_FAILED_CONNECTION_ATTEMPTS: u32 = 5;
+const DECIDE_CHOKE_INTERVAL: time::Duration = time::Duration::from_secs(10);
 
 impl PeerPool {
     pub fn new(torrent: Torrent) -> Result<PeerPool, io::Error> {
@@ -45,6 +48,7 @@ impl PeerPool {
             active_peers: Vec::new(),
             thread_peers: Vec::new(),
             last_choke_update: time::Instant::now(),
+            last_optimic_unchoke: time::Instant::now(),
         })
     }
 
@@ -119,9 +123,12 @@ impl PeerPool {
                 self.attempt_backlog_connections();
             }
 
-            // TODO: decide who gets choked every 10 seconds
-
             self.consume_messages();
+
+            if self.last_choke_update.elapsed() >= DECIDE_CHOKE_INTERVAL {
+                self.run_choke_algo();
+            }
+
             if self.count_pieces_left() > 0 {
                 self.download(); // TODO: add another step to actually write pieces to filesystem
             }
@@ -129,6 +136,97 @@ impl PeerPool {
             self.upload(); // TODO: this will send pieces
             self.check_keep_alive();
         }
+    }
+
+    fn run_choke_algo(&mut self) {
+        let unchoke = self.decide_unchoke();
+
+        let mut ts = spawn_peer_threads(
+            &mut self
+                .active_peers
+                .extract_if(.., |ap| unchoke.contains(ap.peer_id.as_ref().unwrap()))
+                .collect(),
+            |mut p: Peer| -> Option<Peer> {
+                if let Err(e) = p.set_choked(false) {
+                    println!("failed to set uninterested for peer {:?}", e);
+                    return None;
+                }
+                Some(p)
+            },
+        );
+        ts.extend(spawn_peer_threads(
+            &mut self.active_peers,
+            |mut p: Peer| -> Option<Peer> {
+                if let Err(e) = p.set_choked(true) {
+                    println!("failed to set uninterested for peer {:?}", e);
+                    return None;
+                }
+                Some(p)
+            },
+        ));
+        for t in ts {
+            match t.join() {
+                Ok(p) => {
+                    if let Some(peer) = p {
+                        self.active_peers.push(peer);
+                    }
+                }
+                Err(e) => {
+                    println!("failed to join thread {:?}", e);
+                }
+            }
+        }
+    }
+
+    // Returns peer ids to unchoke, any peer id not in this list is to be choked
+    fn decide_unchoke(&mut self) -> (Vec<[u8; 20]>) {
+        self.last_choke_update = time::Instant::now();
+
+        let choke_rate_interval = time::Duration::from_secs(30);
+
+        struct Uploader {
+            peer_id: [u8; 20],
+            upload_rate: usize,
+        }
+
+        let mut upload_rates = Vec::new();
+        for ap in &self.active_peers {
+            upload_rates.push(Uploader {
+                peer_id: ap.peer_id.unwrap(),
+                upload_rate: ap.calculate_upload_rate(choke_rate_interval),
+            });
+        }
+        upload_rates.sort_by(|a, b| b.upload_rate.cmp(&a.upload_rate));
+
+        let mut unchoke = Vec::new();
+
+        if upload_rates.is_empty() {
+            return unchoke;
+        }
+
+        // Select 4 best interested uploaders
+        let mut idx = 0;
+        while unchoke.len() < 4 && idx < upload_rates.len() {
+            let ap = self
+                .active_peers
+                .iter()
+                .find(|a| a.peer_id == Some(upload_rates.get(idx).unwrap().peer_id))
+                .unwrap();
+            if ap.peer_interested {
+                unchoke.push(ap.peer_id.unwrap());
+            }
+            idx += 1;
+        }
+
+        if self.last_optimic_unchoke.elapsed() >= choke_rate_interval {
+            for ap in self.active_peers.iter().rev() {
+                if ap.peer_choked && ap.peer_interested {
+                    unchoke.push(ap.peer_id.unwrap());
+                }
+            }
+        }
+
+        unchoke
     }
 
     fn consume_messages(self: &mut Self) {
@@ -280,6 +378,7 @@ impl PeerPool {
             match dt.thread.join() {
                 Ok(p) => {
                     if p.1 {
+                        // TODO: keep track of HAVE announced pieces, and announce them
                         self.have_pieces.insert(dt.piece);
                         self.active_peers.push(p.0);
                     } else {

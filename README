@@ -16,6 +16,7 @@ supported beps:
 
 todo:
 
+- better code quality
 - magnet links
 - http trackers
 - verify HAVE messages, blacklist and choke

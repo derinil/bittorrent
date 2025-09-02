@@ -178,6 +178,8 @@ impl PeerPool {
 
         let server = self.server.take().unwrap();
         let info_hash = self.torrent.info_hash.clone();
+        let have_pieces = self.have_pieces.clone();
+        let piece_count = self.torrent.get_total_piece_count();
 
         self.accept_thread = Some(thread::spawn(move || -> Option<Peer> {
             let (conn, addr) = server.s.accept().unwrap();
@@ -206,6 +208,11 @@ impl PeerPool {
                     return None;
                 }
             }
+            peer.send_message(
+                MessageType::Bitfield,
+                Some(&create_bitfield(piece_count, &have_pieces)),
+            )
+            .unwrap();
 
             return Some(peer);
         }));
@@ -790,4 +797,40 @@ where
     });
 
     ts
+}
+
+pub fn create_bitfield(piece_count: u32, have: &HashSet<u32>) -> Vec<u8> {
+    let mut data = Vec::new();
+
+    let mut byte: u8 = 0;
+    for i in 0..piece_count {
+        if i > 0 && i % 8 == 0 {
+            data.push(byte);
+            byte = 0;
+        }
+        if have.contains(&i) {
+            byte |= 1 << (7 - (i % 8));
+        }
+    }
+    data.push(byte);
+
+    return data;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_bitfield() {
+        let mut have = HashSet::new();
+        for i in 0..19 {
+            have.insert(i);
+        }
+        have.remove(&u32::from_str_radix("3", 10).unwrap());
+        let b = create_bitfield(have.len() as u32, &have);
+        println!("{:08b} {}", b.get(0).unwrap(), b.len());
+        println!("{:08b} {}", b.get(1).unwrap(), b.len());
+        println!("{:08b} {}", b.get(2).unwrap(), b.len());
+    }
 }

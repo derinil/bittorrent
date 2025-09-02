@@ -298,10 +298,10 @@ impl Peer {
     pub fn can_download(&self) -> bool {
         !self.am_choked
     }
-
-    pub fn can_upload(&self) -> bool {
-        !self.peer_choked && self.peer_interested
-    }
+ 
+    // pub fn can_upload(&self) -> bool {
+    //     !self.peer_choked && self.peer_interested
+    // }
 
     pub fn get_peer_id(self: &Self) -> Result<Option<String>, std::string::FromUtf8Error> {
         if let None = self.peer_id {

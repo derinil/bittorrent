@@ -16,12 +16,12 @@ supported beps:
 
 todo:
 
-- server accept connections
 - magnet links
 - http trackers
 - verify HAVE messages, blacklist and choke
 - endgame mode
 - faster download
+- spawn threads and join them later, we block too often
 
 failed to receive message Error { kind: UnexpectedEof, message: "failed to fill whole buffer" }
 failed to download piece from peer Error { kind: UnexpectedEof, message: "failed to fill whole buffer" }

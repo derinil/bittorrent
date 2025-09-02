@@ -9,6 +9,7 @@ use std::{
     collections::HashSet,
     fs,
     io::{self, Write},
+    net,
     os::unix::fs::FileExt,
     sync::Arc,
     thread::{self, JoinHandle},
@@ -17,11 +18,12 @@ use std::{
 
 pub struct PeerPool {
     torrent: Torrent,
+    download_file_name: String,
     have_pieces: HashSet<u32>,
     pieces_in_progress: HashSet<u32>,
 
-    server: Server,
-    download_file_name: String,
+    server: Option<Server>,
+    accept_thread: Option<JoinHandle<Option<Peer>>>,
 
     active_peers: Vec<Peer>,
     downloading_threads: Vec<DownloadThread>,
@@ -51,7 +53,8 @@ impl PeerPool {
             torrent: torrent,
             have_pieces: HashSet::new(),
             pieces_in_progress: HashSet::new(),
-            server: Server::start()?,
+            server: Some(Server::start()?),
+            accept_thread: None,
             backlog_peers: Vec::new(),
             active_peers: Vec::new(),
             download_file_name: download_file_name,
@@ -124,7 +127,9 @@ impl PeerPool {
 
     pub fn handle(self: &mut Self) {
         loop {
-            // TODO: accept connections
+            if self.count_active_connections() < MAX_CONNECTIONS {
+                self.accept_connections();
+            }
 
             // Try to connect to backlog peers.
             // Only do this while downloading, no need to actively seek
@@ -147,6 +152,63 @@ impl PeerPool {
             self.upload();
             self.check_keep_alive();
         }
+    }
+
+    fn accept_connections(&mut self) {
+        if self.accept_thread.is_some() {
+            if !self.accept_thread.as_ref().unwrap().is_finished() {
+                return;
+            }
+            match self.accept_thread.take().unwrap().join() {
+                Ok(p) => {
+                    if p.is_some() {
+                        println!("peer connected via server");
+                        self.active_peers.push(p.unwrap());
+                    }
+                }
+                Err(e) => {
+                    println!("failed to join accept thread {:?}", e);
+                }
+            }
+        }
+
+        if self.server.is_none() {
+            return;
+        }
+
+        let server = self.server.take().unwrap();
+        let info_hash = self.torrent.info_hash.clone();
+
+        self.accept_thread = Some(thread::spawn(move || -> Option<Peer> {
+            let (conn, addr) = server.s.accept().unwrap();
+            if addr.ip().is_ipv6() {
+                return None;
+            }
+
+            let mut peer = match addr.ip() {
+                net::IpAddr::V4(v4) => Peer::new(u32::from_be_bytes(v4.octets()), addr.port()),
+                net::IpAddr::V6(_) => {
+                    return None;
+                }
+            };
+
+            match peer.accept(conn) {
+                Ok(_) => {}
+                Err(e) => {
+                    println!("failed to accept {:?}", e);
+                    return None;
+                }
+            }
+            match peer.handshake(info_hash) {
+                Ok(_) => {}
+                Err(e) => {
+                    println!("failed to handshake with incoming peer {:?}", e);
+                    return None;
+                }
+            }
+
+            return Some(peer);
+        }));
     }
 
     fn run_choke_algo(&mut self) {
@@ -573,6 +635,10 @@ impl PeerPool {
 
         // Wasteful way of randomizing peer order
         pl.drain().collect()
+    }
+
+    fn count_active_connections(&self) -> usize {
+        self.active_peers.len() + self.uploading_threads.len() + self.downloading_threads.len()
     }
 }
 

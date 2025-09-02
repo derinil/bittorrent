@@ -109,12 +109,17 @@ impl Peer {
         }
     }
 
-    // TODO: fn accept(self: &Self) {}
-
     pub fn connect(self: &mut Self) -> Result<(), io::Error> {
         let c = TcpStream::connect_timeout(&self.addr, time::Duration::from_secs(3))?;
         self.conn = Some(c);
         self.configure_connection()?;
+        Ok(())
+    }
+
+    pub fn accept(self: &mut Self, conn: TcpStream) -> Result<(), io::Error> {
+        self.conn = Some(conn);
+        self.configure_connection()?;
+        
         Ok(())
     }
 
